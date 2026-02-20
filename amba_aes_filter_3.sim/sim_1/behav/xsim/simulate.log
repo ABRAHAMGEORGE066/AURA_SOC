@@ -1,0 +1,191 @@
+Time resolution is 1 ps
+[20000] TB: DUT Reset Complete
+
+========================================================
+TEST 1: Single Write/Read to Generic Memory Slaves
+========================================================
+[50000] TB: Wrote 0xAAAAAAAA to Slave 1 @ 0x0000_0010
+[90000] TB: Read from Slave 1 @ 0x0000_0010 -> 0x00000000
+[120000] TB: Wrote 0xBBBBBBBB to Slave 2 @ 0x0000_0020
+[160000] TB: Read from Slave 2 @ 0x0000_0020 -> 0x00000000
+
+========================================================
+TEST 2: 4-Beat Burst Write and Single Read Verify
+========================================================
+[170000] TB: Starting INCR4 Write Burst to Slave 2 at Addr 0x00000040
+[210000] TB: Finished INCR4 Write Burst
+[250000] TB: Burst Read addr 0x0000_0040 -> 0x00000000
+[290000] TB: Burst Read addr 0x0000_0044 -> 0x00000000
+[330000] TB: Burst Read addr 0x0000_0048 -> 0x00000000
+[370000] TB: Burst Read addr 0x0000_004C -> 0x00000000
+
+========================================================
+TEST 3: Filter Chain Processing (AMBA + Wireline Filters)
+========================================================
+[370000] TB: Testing 6-stage filter chain pipeline
+[370000] TB: Filter Order: CTLE->DC-Offset->FIR-EQ->DFE->Glitch->LPF
+[370000] TB: Filter test vectors initialized
+[370000] TB: Filter Test 0 - Input: 0xxxx (    x)
+[510000] TB: Filter Test 0 - Output: 0xxxx (    x)
+[510000] TB: Filter Test 0 - RESULT: FAIL (Output out of range)
+[530000] TB: Filter Test 1 - Input: 0x200 (  512)
+[670000] TB: Filter Test 1 - Output: 0x000 (    0)
+[670000] TB: Filter Test 1 - RESULT: PASS (Output in valid range)
+[690000] TB: Filter Test 2 - Input: 0x400 ( 1024)
+[830000] TB: Filter Test 2 - Output: 0x000 (    0)
+[830000] TB: Filter Test 2 - RESULT: PASS (Output in valid range)
+[850000] TB: Filter Test 3 - Input: 0x7ff ( 2047)
+[990000] TB: Filter Test 3 - Output: 0x000 (    0)
+[990000] TB: Filter Test 3 - RESULT: PASS (Output in valid range)
+[1010000] TB: Filter Test 4 - Input: 0x800 (-2048)
+[1150000] TB: Filter Test 4 - Output: 0x000 (    0)
+[1150000] TB: Filter Test 4 - RESULT: PASS (Output in valid range)
+[1170000] TB: Filter Test 5 - Input: 0xa00 (-1536)
+[1310000] TB: Filter Test 5 - Output: 0x000 (    0)
+[1310000] TB: Filter Test 5 - RESULT: PASS (Output in valid range)
+[1330000] TB: Filter Test 6 - Input: 0xc00 (-1024)
+[1470000] TB: Filter Test 6 - Output: 0x000 (    0)
+[1470000] TB: Filter Test 6 - RESULT: PASS (Output in valid range)
+[1490000] TB: Filter Test 7 - Input: 0xfff (   -1)
+[1630000] TB: Filter Test 7 - Output: 0x000 (    0)
+[1630000] TB: Filter Test 7 - RESULT: PASS (Output in valid range)
+[1650000] TB: Filter Test 8 - Input: 0x050 (   80)
+[1790000] TB: Filter Test 8 - Output: 0x000 (    0)
+[1790000] TB: Filter Test 8 - RESULT: PASS (Output in valid range)
+[1810000] TB: Filter Test 9 - Input: 0x1ab (  427)
+[1950000] TB: Filter Test 9 - Output: 0x000 (    0)
+[1950000] TB: Filter Test 9 - RESULT: PASS (Output in valid range)
+[1970000] TB: Filter Test 10 - Input: 0x2cd (  717)
+[2110000] TB: Filter Test 10 - Output: 0x000 (    0)
+[2110000] TB: Filter Test 10 - RESULT: PASS (Output in valid range)
+[2130000] TB: Filter Test 11 - Input: 0x3ef ( 1007)
+[2270000] TB: Filter Test 11 - Output: 0x000 (    0)
+[2270000] TB: Filter Test 11 - RESULT: PASS (Output in valid range)
+[2290000] TB: Filter Test 12 - Input: 0x444 ( 1092)
+[2430000] TB: Filter Test 12 - Output: 0x000 (    0)
+[2430000] TB: Filter Test 12 - RESULT: PASS (Output in valid range)
+[2450000] TB: Filter Test 13 - Input: 0x555 ( 1365)
+[2590000] TB: Filter Test 13 - Output: 0x000 (    0)
+[2590000] TB: Filter Test 13 - RESULT: PASS (Output in valid range)
+[2610000] TB: Filter Test 14 - Input: 0x666 ( 1638)
+[2750000] TB: Filter Test 14 - Output: 0x000 (    0)
+[2750000] TB: Filter Test 14 - RESULT: PASS (Output in valid range)
+[2770000] TB: Filter Test 15 - Input: 0x777 ( 1911)
+[2910000] TB: Filter Test 15 - Output: 0x000 (    0)
+[2910000] TB: Filter Test 15 - RESULT: PASS (Output in valid range)
+
+========================================================
+TB: Filter Chain Test Summary
+========================================================
+TB: Total tests: 16 | Passed: 15 | Failed: 1
+
+Filter Chain Test Results Table:
+Index | Input (hex) | Input (dec) | Output (hex) | Output (dec) | Status
+------|-------------|-------------|--------------|--------------|-------
+    0 | 0x100      |   256      | 0xxxx       | x       | PASS
+    1 | 0x200      |   512      | 0x000       |     0       | PASS
+    2 | 0x400      |  1024      | 0x000       |     0       | PASS
+    3 | 0x7ff      |  2047      | 0x000       |     0       | PASS
+    4 | 0x800      | -2048      | 0x000       |     0       | PASS
+    5 | 0xa00      | -1536      | 0x000       |     0       | PASS
+    6 | 0xc00      | -1024      | 0x000       |     0       | PASS
+    7 | 0xfff      |    -1      | 0x000       |     0       | PASS
+    8 | 0x050      |    80      | 0x000       |     0       | PASS
+    9 | 0x1ab      |   427      | 0x000       |     0       | PASS
+   10 | 0x2cd      |   717      | 0x000       |     0       | PASS
+   11 | 0x3ef      |  1007      | 0x000       |     0       | PASS
+   12 | 0x444      |  1092      | 0x000       |     0       | PASS
+   13 | 0x555      |  1365      | 0x000       |     0       | PASS
+   14 | 0x666      |  1638      | 0x000       |     0       | PASS
+   15 | 0x777      |  1911      | 0x000       |     0       | PASS
+
+========================================================
+TEST 4: AES Crypto Slave (Slave 4) Multi-Block Test
+========================================================
+[2930000] TB: AES Block 0 - Writing plaintexts at base 0x00000060
+[2930000] TB: Block 0 - Words: W0=0x11111111 W1=0x22222222 W2=0x33333333 W3=0x44444444
+[3050000] TB: AES Block 0 - Reading ciphertexts
+[3090000] TB: Block 0 Word 0 - Ciphertext: 0x00000000
+[3130000] TB: Block 0 Word 1 - Ciphertext: 0x00000000
+[3170000] TB: Block 0 Word 2 - Ciphertext: 0x00000000
+[3210000] TB: Block 0 Word 3 - Ciphertext: 0x00000000
+[3220000] TB: Block 0 - PLAINTEXT:  0x11111111222222223333333344444444
+[3220000] TB: Block 0 - ENCRYPTED:  0x00000000000000000000000000000000
+[3220000] TB: Block 0 - DECRYPTED:  0x699199734d6f53dad89d82edc21d3e08
+[3220000] TB: Block 0 - VERIFICATION: FAIL (decrypted != input)
+[3260000] TB: Block 0 Word 0 - FAIL (got=0x00000000, expected=0x11111111)
+[3300000] TB: Block 0 Word 1 - FAIL (got=0x00000000, expected=0x22222222)
+[3340000] TB: Block 0 Word 2 - FAIL (got=0x00000000, expected=0x33333333)
+[3380000] TB: Block 0 Word 3 - FAIL (got=0x00000000, expected=0x44444444)
+[3380000] TB: AES Block 1 - Writing plaintexts at base 0x00000070
+[3380000] TB: Block 1 - Words: W0=0x11111112 W1=0x22222223 W2=0x33333334 W3=0x44444445
+[3500000] TB: AES Block 1 - Reading ciphertexts
+[3540000] TB: Block 1 Word 0 - Ciphertext: 0x00000000
+[3580000] TB: Block 1 Word 1 - Ciphertext: 0x00000000
+[3620000] TB: Block 1 Word 2 - Ciphertext: 0x00000000
+[3660000] TB: Block 1 Word 3 - Ciphertext: 0x00000000
+[3670000] TB: Block 1 - PLAINTEXT:  0x11111112222222233333333444444445
+[3670000] TB: Block 1 - ENCRYPTED:  0x00000000000000000000000000000000
+[3670000] TB: Block 1 - DECRYPTED:  0x699199734d6f53dad89d82edc21d3e08
+[3670000] TB: Block 1 - VERIFICATION: FAIL (decrypted != input)
+[3710000] TB: Block 1 Word 0 - FAIL (got=0x00000000, expected=0x11111112)
+[3750000] TB: Block 1 Word 1 - FAIL (got=0x00000000, expected=0x22222223)
+[3790000] TB: Block 1 Word 2 - FAIL (got=0x00000000, expected=0x33333334)
+[3830000] TB: Block 1 Word 3 - FAIL (got=0x00000000, expected=0x44444445)
+[3830000] TB: AES Block 2 - Writing plaintexts at base 0x00000080
+[3830000] TB: Block 2 - Words: W0=0x11111113 W1=0x22222224 W2=0x33333335 W3=0x44444446
+[3950000] TB: AES Block 2 - Reading ciphertexts
+[3990000] TB: Block 2 Word 0 - Ciphertext: 0x00000000
+[4030000] TB: Block 2 Word 1 - Ciphertext: 0x00000000
+[4070000] TB: Block 2 Word 2 - Ciphertext: 0x00000000
+[4110000] TB: Block 2 Word 3 - Ciphertext: 0x00000000
+[4120000] TB: Block 2 - PLAINTEXT:  0x11111113222222243333333544444446
+[4120000] TB: Block 2 - ENCRYPTED:  0x00000000000000000000000000000000
+[4120000] TB: Block 2 - DECRYPTED:  0x699199734d6f53dad89d82edc21d3e08
+[4120000] TB: Block 2 - VERIFICATION: FAIL (decrypted != input)
+[4160000] TB: Block 2 Word 0 - FAIL (got=0x00000000, expected=0x11111113)
+[4200000] TB: Block 2 Word 1 - FAIL (got=0x00000000, expected=0x22222224)
+[4240000] TB: Block 2 Word 2 - FAIL (got=0x00000000, expected=0x33333335)
+[4280000] TB: Block 2 Word 3 - FAIL (got=0x00000000, expected=0x44444446)
+[4280000] TB: AES Crypto Test Complete - Passed: 0, Failed: 12
+
+========================================================
+COMPLETE TEST SUMMARY
+========================================================
+TEST 1: Generic Memory Slaves ............ COMPLETE
+TEST 2: AHB Burst Protocol ............... COMPLETE
+TEST 3: Wireline Filter Chain ............ COMPLETE
+         Passed: 15 / 16
+TEST 4: AES Crypto Processing ............ COMPLETE
+         Passed: 0 / 12
+========================================================
+
+====================================
+ACTUAL POWER ANALYSIS FROM SIMULATION
+====================================
+Total Simulation Cycles: 426
+
+--- SIMULATION ACTIVITY ---
+Global clock cycles: 426
+Master active cycles: 0
+
+--- POWER BREAKDOWN ---
+Total baseline power: 100.0 mW
+  Static/Leakage: 10.0 mW
+  Static overhead: 5.0 mW
+  Dynamic (switching): 85.0 mW
+
+--- ACTIVITY MEASUREMENT ---
+Master utilization: 0.00%
+Idle time: 100.00%
+
+--- WITH IDEAL CLOCK GATING ---
+Optimized power: 15.0 mW
+Power saved: 85.0 mW
+Power reduction: 85.00%
+
+====================================
+Simulation finished at time 4290000
+========================================================
+
+$finish called at time : 4340 ns : File "C:/Users/abrah/amba_aes_filter_clk/amba_aes_filter_3.srcs/sim_1/new/ahb_top_tb.v" Line 591
