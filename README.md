@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # README: AMBA AES Filter with Wireline Receiver Chain
 
 ## 🎯 Project Overview
@@ -473,3 +474,7 @@ This implementation is provided for use in your AMBA AES Filter project. All cod
 *Last Updated: February 3, 2026*  
 *Status: Complete & Verified ✓*
 
+=======
+# AURA_SOC
+Verilog implementation of soc protocols such as amba,ahb,apb and their integration with aes encryption,decryption,clock gating and various other features
+>>>>>>> 851e144526a9c16577b575f28667d390c27c581a
