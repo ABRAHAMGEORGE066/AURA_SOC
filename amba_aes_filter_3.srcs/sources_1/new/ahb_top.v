@@ -1,4 +1,5 @@
 `timescale 1ns / 1ps
+`include "ahb_clock_gate.v"
 
 //======================================================================
 // MODULE: ahb_top
@@ -41,12 +42,27 @@ module ahb_top(
     wire hreadyout;
     wire hresp;
 
-    // All modules use ungated hclk for protocol compliance
-    wire master_hclk = hclk;
-    wire slave1_hclk = hclk;
-    wire slave2_hclk = hclk;
-    wire slave3_hclk = hclk;
-    wire slave4_hclk = hclk;
+    // Clock gating: instantiate ahb_clock_gate
+    wire master_hclk;
+    wire slave1_hclk;
+    wire slave2_hclk;
+    wire slave3_hclk;
+    wire slave4_hclk;
+
+    ahb_clock_gate clk_gate_inst(
+        .hclk(hclk),
+        .hresetn(hresetn),
+        .enable(enable),
+        .hsel_1(hsel_1),
+        .hsel_2(hsel_2),
+        .hsel_3(hsel_3),
+        .hsel_4(hsel_4),
+        .master_hclk(master_hclk),
+        .slave1_hclk(slave1_hclk),
+        .slave2_hclk(slave2_hclk),
+        .slave3_hclk(slave3_hclk),
+        .slave4_hclk(slave4_hclk)
+    );
 
     // Connect internal hreadyout to the monitoring port
     assign hreadyout_mon = hreadyout;
@@ -219,21 +235,18 @@ module ahb_slave(
             hreadyout <= 1'b1; hresp <= 1'b0; hrdata <= 32'd0;
             addr_reg <= 5'd0; read_in_progress <= 1'b0;
         end else begin
-            if (read_in_progress) begin
-                hrdata <= mem_arr[addr_reg];
-                hreadyout <= 1'b1;
-                read_in_progress <= 1'b0;
-            end else if (hsel && hready && (htrans == T_NONSEQ || htrans == T_SEQ)) begin
+            if (hsel && hready && (htrans == T_NONSEQ || htrans == T_SEQ)) begin
                 if (hwrite) begin
                     mem_arr[haddr[6:2]] <= hwdata;
+                    hrdata <= hwdata; // Immediate read-after-write
                     hreadyout <= 1'b1;
                 end else begin
                     addr_reg <= haddr[6:2];
-                    hreadyout <= 1'b0; // Insert wait state for one cycle
-                    read_in_progress <= 1'b1;
+                    hrdata <= mem_arr[haddr[6:2]];
+                    hreadyout <= 1'b1;
                 end
             end else if (!hsel) begin
-                hreadyout <= 1'b1; // Default to ready when not selected
+                hreadyout <= 1'b1;
             end
         end
     end
@@ -329,7 +342,6 @@ module ahb_crypto_slave(
             hresp <= 1'b0;
             addr_reg <= 5'd0;
         end else begin
-            // Default values
             if (!hsel) begin
                 hreadyout <= 1'b1;
             end
@@ -343,27 +355,24 @@ module ahb_crypto_slave(
                     2'd2: plaintext[63:32]  <= hwdata;
                     2'd3: plaintext[31:0]   <= hwdata;
                 endcase
-                // Always latch computed ciphertext after any write
-                ciphertext <= aes_out;
-                // Count received words; after 4 words mark write_complete
+                // Only latch ciphertext after all 4 words are written
                 if (haddr[3:2] == 2'd3) begin
+                    #1; // Wait one cycle for AES output to stabilize
+                    ciphertext <= aes_out;
                     write_complete <= 1'b1;
-                    serve_cipher_next <= 1'b1; // legacy: next read returns some ciphertext
-                    // reset per-word served flags for the new block
+                    serve_cipher_next <= 1'b1;
                     cipher_served <= 4'b0000;
                     plain_served <= 4'b0000;
                 end
-                hreadyout <= 1'b1; // write completes in one cycle
+                hreadyout <= 1'b1;
             end
 
             // Handle read transactions: return ciphertext first, then plaintext
             if (hsel && hready && (htrans == T_NONSEQ || htrans == T_SEQ) && !hwrite) begin
                 addr_reg <= haddr[6:2];
-                // Use bit mask derived from the word select bits so we can update flags in one cycle
                 mask = 4'b0001 << haddr[3:2];
 
                 if (write_complete) begin
-                    // If ciphertext for this word hasn't been served yet, serve it directly from ciphertext register
                     if (!(cipher_served & mask)) begin
                         case (haddr[3:2])
                             2'd0: hrdata <= ciphertext[127:96];
@@ -372,10 +381,8 @@ module ahb_crypto_slave(
                             2'd3: hrdata <= ciphertext[31:0];
                         endcase
                         hreadyout <= 1'b1;
-                        // mark ciphertext for this word as served (non-blocking update)
                         cipher_served <= cipher_served | mask;
-                    end else if (!((plain_served) & mask)) begin
-                        // serve plaintext for this word
+                    end else if (!(plain_served & mask)) begin
                         case (haddr[3:2])
                             2'd0: hrdata <= plaintext[127:96];
                             2'd1: hrdata <= plaintext[95:64];
@@ -383,10 +390,8 @@ module ahb_crypto_slave(
                             2'd3: hrdata <= plaintext[31:0];
                         endcase
                         hreadyout <= 1'b1;
-                        // compute new plain_served vector after serving this word
                         new_plain_served = plain_served | mask;
                         plain_served <= new_plain_served;
-                        // If all plaintext words served (including this one), clear write_complete
                         if (&new_plain_served) begin
                             write_complete <= 1'b0;
                         end

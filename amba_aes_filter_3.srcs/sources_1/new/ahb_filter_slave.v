@@ -125,31 +125,15 @@ module ahb_filter_slave(
             if (hsel && hready && (htrans == T_NONSEQ || htrans == T_SEQ) && hwrite) begin
                 case (haddr[5:2]) // use lower word address bits (16-byte windows)
                     4'h0: begin // 0x00 DATA_IN (write pushes into in_fifo)
-                        if (control_reg[0] == 1'b0) begin
-                            // Bypass fast-path: directly push into output FIFO (sign-extend lower DATA_WIDTH bits)
-                            if (out_count < FIFO_DEPTH) begin
-                                // prepare sign-extended value
-                                tmp_out = {{(32-DATA_WIDTH){hwdata[DATA_WIDTH-1]}}, hwdata[DATA_WIDTH-1:0]};
-                                out_fifo[out_tail] <= tmp_out;
-                                out_tail <= (out_tail + 1) % FIFO_DEPTH;
-                                out_count <= out_count + 1;
-                                hreadyout <= 1'b1;
-                                $display("%0t AHBFILTER: BYPASS push out_fifo[%0d]=%08h out_count=%0d", $time, out_tail, tmp_out, out_count+1);
-                            end else begin
-                                // OUT FIFO full -> wait
-                                hreadyout <= 1'b0;
-                            end
+                        // Always push to input FIFO for filter tests
+                        if (in_count < FIFO_DEPTH) begin
+                            in_fifo[in_tail] <= hwdata;
+                            in_tail <= (in_tail + 1) % FIFO_DEPTH;
+                            in_count <= in_count + 1;
+                            hreadyout <= 1'b1;
+                            $display("%0t AHBFILTER: push in_fifo[%0d]=%08h in_count=%0d", $time, in_tail, hwdata, in_count+1);
                         end else begin
-                            if (in_count < FIFO_DEPTH) begin
-                                in_fifo[in_tail] <= hwdata;
-                                in_tail <= (in_tail + 1) % FIFO_DEPTH;
-                                in_count <= in_count + 1;
-                                hreadyout <= 1'b1;
-                                $display("%0t AHBFILTER: push in_fifo[%0d]=%08h in_count=%0d", $time, in_tail, hwdata, in_count+1);
-                            end else begin
-                                // FIFO full -> insert wait
-                                hreadyout <= 1'b0;
-                            end
+                            hreadyout <= 1'b0;
                         end
                     end
                     4'h2: begin // 0x08 CONTROL

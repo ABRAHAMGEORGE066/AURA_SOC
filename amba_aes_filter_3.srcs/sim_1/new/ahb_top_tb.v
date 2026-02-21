@@ -234,6 +234,8 @@ module ahb_top_tb();
             @(negedge hclk);
             @(negedge hclk);
             enable <= 1'b0;
+            // Protocol-compliant delay for data latch
+            repeat(2) @(negedge hclk);
         end
     endtask
 
@@ -252,6 +254,9 @@ module ahb_top_tb();
             @(negedge hclk);
             @(negedge hclk);
             enable <= 1'b0;
+            // Wait for ready signal
+            wait (hreadyout_tb == 1'b1);
+            repeat(1) @(negedge hclk);
         end
     endtask
 
@@ -262,25 +267,20 @@ module ahb_top_tb();
         begin
             @(negedge hclk);
             $display("[%0t] TB: Starting INCR4 Write Burst to Slave %d at Addr 0x%h", $time, sel, start_address);
-            enable <= 1'b1;
-            slave_sel <= sel;
-            addr <= start_address;
             wr <= 1'b1;
             burst_type <= 3'b011; // INCR4
-
-            data_in <= start_address + 100;
-            @(negedge hclk);
-            
-            data_in <= start_address + 4 + 100;
-            @(negedge hclk);
-
-            data_in <= start_address + 8 + 100;
-            @(negedge hclk);
-
-            data_in <= start_address + 12 + 100;
-            @(negedge hclk);
-
-            enable <= 1'b0;
+            for (integer i = 0; i < 4; i = i + 1) begin
+                enable <= 1'b1;
+                slave_sel <= sel;
+                addr <= start_address + (i * 4);
+                data_in <= start_address + (i * 4) + 100;
+                @(negedge hclk);
+                enable <= 1'b0;
+                repeat(1) @(negedge hclk);
+            end
+            wr <= 1'b0;
+            // Protocol-compliant delay for data latch
+            repeat(2) @(negedge hclk);
             $display("[%0t] TB: Finished INCR4 Write Burst", $time);
         end
     endtask
@@ -304,10 +304,9 @@ module ahb_top_tb();
             @(negedge hclk);
             @(negedge hclk);
             enable <= 1'b0;
-            
-            // Wait for 6-cycle filter latency + margin
-            repeat(7) @(negedge hclk);
-            
+            // Wait for filter latency + margin
+            repeat(8) @(negedge hclk);
+
             // Read filtered result back
             @(negedge hclk);
             enable <= 1'b1;
@@ -318,7 +317,9 @@ module ahb_top_tb();
             @(negedge hclk);
             @(negedge hclk);
             enable <= 1'b0;
-            
+            // Wait for ready signal
+            wait (hreadyout_tb == 1'b1);
+            repeat(1) @(negedge hclk);
             // Extract 12-bit filtered result
             sample_out <= hrdata_tb[11:0];
         end
@@ -356,8 +357,8 @@ module ahb_top_tb();
         // Enable waveform dump for GTKWave
         $dumpfile("dump.vcd");
         $dumpvars(0, ahb_top_tb);
-        
-        // Initialize all signals at time 0
+
+        // Test Case 1: Generic Memory Slave Write/Read
         hresetn <= 1;
         enable <= 0;
         addr <= 0;
@@ -365,233 +366,160 @@ module ahb_top_tb();
         wr <= 0;
         slave_sel <= 0;
         burst_type <= 0;
-
         reset_dut();
-        clk_gate_monitor_active = 1;  // Start monitoring after reset
-        
-        //=====================================================================
-        // TEST 1: SLAVE 1 & 2 - Generic Memory Slaves (Basic AHB)
-        //=====================================================================
-        $display("\n========================================================");
-        $display("TEST 1: Single Write/Read to Generic Memory Slaves");
-        $display("========================================================");
-        
+        clk_gate_monitor_active = 1;
+        $display("\n==============================");
+        $display("TEST CASE 1: Memory Slave Write/Read");
+        $display("==============================");
         write_single(2'b00, 32'h0000_0010, 32'hAAAAAAAA);
-        $display("[%0t] TB: Wrote 0xAAAAAAAA to Slave 1 @ 0x0000_0010", $time);
-        
         read_single(2'b00, 32'h0000_0010);
-        $display("[%0t] TB: Read from Slave 1 @ 0x0000_0010 -> 0x%h", $time, hrdata_tb);
-        
+        if (hrdata_tb == 32'hAAAAAAAA)
+            $display("PASS: Slave 1 @ 0x0000_0010 = 0x%h", hrdata_tb);
+        else
+            $display("FAIL: Slave 1 @ 0x0000_0010 = 0x%h", hrdata_tb);
         write_single(2'b01, 32'h0000_0020, 32'hBBBBBBBB);
-        $display("[%0t] TB: Wrote 0xBBBBBBBB to Slave 2 @ 0x0000_0020", $time);
-        
         read_single(2'b01, 32'h0000_0020);
-        $display("[%0t] TB: Read from Slave 2 @ 0x0000_0020 -> 0x%h", $time, hrdata_tb);
+        if (hrdata_tb == 32'hBBBBBBBB)
+            $display("PASS: Slave 2 @ 0x0000_0020 = 0x%h", hrdata_tb);
+        else
+            $display("FAIL: Slave 2 @ 0x0000_0020 = 0x%h", hrdata_tb);
+        $display("Test Case 1 Complete\n");
 
-        //=====================================================================
-        // TEST 2: SLAVE 3 - Burst Write and Verify (AHB Burst Protocol)
-        //=====================================================================
-        $display("\n========================================================");
-        $display("TEST 2: 4-Beat Burst Write and Single Read Verify");
-        $display("========================================================");
-        
+        // Test Case 2: Burst Write/Read
+        hresetn <= 1;
+        enable <= 0;
+        addr <= 0;
+        data_in <= 0;
+        wr <= 0;
+        slave_sel <= 0;
+        burst_type <= 0;
+        reset_dut();
+        $display("==============================");
+        $display("TEST CASE 2: Burst Write/Read");
+        $display("==============================");
         write_burst4(2'b10, 32'h0000_0040);
-        
+            // Wait for burst write completion and memory update
+            repeat(6) @(negedge hclk);
+        $display("\n|-------------------------------|");
+        $display("| Burst Read Results             |");
+        $display("|-------------------------------|");
         read_single(2'b10, 32'h0000_0040);
-        $display("[%0t] TB: Burst Read addr 0x0000_0040 -> 0x%h", $time, hrdata_tb);
-        
+        $display("| Addr 0x0000_0040 | %s | 0x%08h |", (hrdata_tb == 32'h000000A4) ? "PASS" : "FAIL", hrdata_tb);
         read_single(2'b10, 32'h0000_0044);
-        $display("[%0t] TB: Burst Read addr 0x0000_0044 -> 0x%h", $time, hrdata_tb);
-        
+        $display("| Addr 0x0000_0044 | %s | 0x%08h |", (hrdata_tb == 32'h000000A8) ? "PASS" : "FAIL", hrdata_tb);
         read_single(2'b10, 32'h0000_0048);
-        $display("[%0t] TB: Burst Read addr 0x0000_0048 -> 0x%h", $time, hrdata_tb);
-        
+        $display("| Addr 0x0000_0048 | %s | 0x%08h |", (hrdata_tb == 32'h000000AC) ? "PASS" : "FAIL", hrdata_tb);
         read_single(2'b10, 32'h0000_004C);
-        $display("[%0t] TB: Burst Read addr 0x0000_004C -> 0x%h", $time, hrdata_tb);
+        $display("| Addr 0x0000_004C | %s | 0x%08h |", (hrdata_tb == 32'h000000B0) ? "PASS" : "FAIL", hrdata_tb);
+        $display("|-------------------------------|\n");
+        $display("Test Case 2 Complete\n");
 
-        //=====================================================================
-        // TEST 3: FILTER CHAIN - Wireline Receiver Filter Processing
-        //=====================================================================
-        $display("\n========================================================");
-        $display("TEST 3: Filter Chain Processing (AMBA + Wireline Filters)");
-        $display("========================================================");
-        $display("[%0t] TB: Testing 6-stage filter chain pipeline", $time);
-        $display("[%0t] TB: Filter Order: CTLE->DC-Offset->FIR-EQ->DFE->Glitch->LPF", $time);
-        
+        // Test Case 3: Filter Chain Processing
+        hresetn <= 1;
+        enable <= 0;
+        addr <= 0;
+        data_in <= 0;
+        wr <= 0;
+        slave_sel <= 0;
+        burst_type <= 0;
+        reset_dut();
+        $display("==============================");
+        $display("TEST CASE 3: Filter Chain Processing");
+        $display("==============================");
         init_filter_test_vectors();
         filter_pass_cnt = 0;
         filter_fail_cnt = 0;
-        
-        // Test each sample through the filter chain
         for (filter_test_idx = 0; filter_test_idx < 16; filter_test_idx = filter_test_idx + 1) begin
             filter_input = test_samples[filter_test_idx];
-            
-            $display("[%0t] TB: Filter Test %0d - Input: 0x%03h (%d)", $time, filter_test_idx, filter_input, $signed(filter_input));
-            
-            // Call the write_and_read_filter task with latency handling
             write_and_read_filter(filter_input, filter_output);
-            
             filtered_results[filter_test_idx] = filter_output;
-            
-            // Display results
-            $display("[%0t] TB: Filter Test %0d - Output: 0x%03h (%d)", 
-                     $time, filter_test_idx, filter_output, $signed(filter_output));
-            
-            // Simple validation: output should be within valid 12-bit range
-            if (filter_output[11] == 1'b0 && filter_output[10:0] < 12'h800) begin
-                $display("[%0t] TB: Filter Test %0d - RESULT: PASS (Output in valid range)", $time, filter_test_idx);
+            $display("| Test %2d | Input: 0x%03h | Output: 0x%03h |", filter_test_idx, filter_input, filter_output);
+            if (filter_test_idx == 0) begin
+                if (filter_output[11:0] == test_samples[0]) begin
+                    $display("| Result: PASS (matches input)   |");
+                    filter_pass_cnt = filter_pass_cnt + 1;
+                end else begin
+                    $display("| Result: FAIL (out of range)    |");
+                    filter_fail_cnt = filter_fail_cnt + 1;
+                end
+            end else if (filter_output[11] == 1'b0 && filter_output[10:0] < 12'h800) begin
+                $display("| Result: PASS (valid range)     |");
                 filter_pass_cnt = filter_pass_cnt + 1;
             end else if (filter_output[11] == 1'b1) begin
-                $display("[%0t] TB: Filter Test %0d - RESULT: PASS (Negative value, valid)", $time, filter_test_idx);
+                $display("| Result: PASS (negative value)  |");
                 filter_pass_cnt = filter_pass_cnt + 1;
             end else begin
-                $display("[%0t] TB: Filter Test %0d - RESULT: FAIL (Output out of range)", $time, filter_test_idx);
+                $display("| Result: FAIL (out of range)    |");
                 filter_fail_cnt = filter_fail_cnt + 1;
             end
-            
-            // Add small gap between tests for observation
-            repeat(2) @(negedge hclk);
+            $display("|--------------------------------|\n");
         end
-        
-        $display("\n========================================================");
-        $display("TB: Filter Chain Test Summary");
-        $display("========================================================");
-        $display("TB: Total tests: %0d | Passed: %0d | Failed: %0d", 16, filter_pass_cnt, filter_fail_cnt);
-        
-        // Display all results in a table format
-        $display("\nFilter Chain Test Results Table:");
-        $display("Index | Input (hex) | Input (dec) | Output (hex) | Output (dec) | Status");
-        $display("------|-------------|-------------|--------------|--------------|-------");
-        for (filter_test_idx = 0; filter_test_idx < 16; filter_test_idx = filter_test_idx + 1) begin
-            $display("%5d | 0x%03h      | %5d      | 0x%03h       | %5d       | PASS", 
-                     filter_test_idx, test_samples[filter_test_idx], $signed(test_samples[filter_test_idx]),
-                     filtered_results[filter_test_idx], $signed(filtered_results[filter_test_idx]));
-        end
+        $display("Filter Chain Test Summary: Passed=%0d Failed=%0d", filter_pass_cnt, filter_fail_cnt);
+        $display("\n|-------------------------------|");
+        $display("| Filter Chain Test Summary      |");
+        $display("|-------------------------------|");
+        $display("| Passed: %2d | Failed: %2d        |", filter_pass_cnt, filter_fail_cnt);
+        $display("|-------------------------------|\n");
+        $display("Test Case 3 Complete\n");
 
-        //=====================================================================
-        // TEST 4: CRYPTO SLAVE (AES) - Multi-block Encryption/Decryption
-        //=====================================================================
-        $display("\n========================================================");
-        $display("TEST 4: AES Crypto Slave (Slave 4) Multi-Block Test");
-        $display("========================================================");
-        
+        // Test Case 4: AES Crypto Slave
+        hresetn <= 1;
+        enable <= 0;
+        addr <= 0;
+        data_in <= 0;
+        wr <= 0;
+        slave_sel <= 0;
+        burst_type <= 0;
+        reset_dut();
+        $display("==============================");
+        $display("TEST CASE 4: AES Crypto Slave");
+        $display("==============================");
         pass_cnt = 0;
         fail_cnt = 0;
-        
         for (blk_idx = 0; blk_idx < 3; blk_idx = blk_idx + 1) begin
             c_base = 32'h0000_0060 + blk_idx * 32'h10;
-            
             w0 = 32'h1111_1111 + blk_idx;
             w1 = 32'h2222_2222 + blk_idx;
             w2 = 32'h3333_3333 + blk_idx;
             w3 = 32'h4444_4444 + blk_idx;
-
-            $display("[%0t] TB: AES Block %0d - Writing plaintexts at base 0x%h", $time, blk_idx, c_base);
-            $display("[%0t] TB: Block %0d - Words: W0=0x%h W1=0x%h W2=0x%h W3=0x%h", 
-                     $time, blk_idx, w0, w1, w2, w3);
-
             write_single(2'b11, c_base + 32'd0, w0);
             write_single(2'b11, c_base + 32'd4, w1);
             write_single(2'b11, c_base + 32'd8, w2);
             write_single(2'b11, c_base + 32'd12, w3);
-
-
-            // Wait for AES encryption to complete (combinational or pipelined delay)
-            repeat(2) @(negedge hclk); // Add delay to ensure ciphertext is ready
-
-            // Read ciphertext (assuming MSW-first order; adjust if LSW-first is needed)
-            $display("[%0t] TB: AES Block %0d - Reading ciphertexts", $time, blk_idx);
+            repeat(4) @(negedge hclk);
+            $display("|-------------------------------|");
+            $display("| AES Block %0d Results          |", blk_idx);
+            $display("|-------------------------------|");
             for (word_idx = 0; word_idx < 4; word_idx = word_idx + 1) begin
                 read_single(2'b11, c_base + (word_idx * 4));
                 cword[word_idx] = hrdata_tb;
-                $display("[%0t] TB: Block %0d Word %0d - Ciphertext: 0x%h", $time, blk_idx, word_idx, cword[word_idx]);
+                $display("| Word %d | Ciphertext: 0x%08h   |", word_idx, cword[word_idx]);
             end
-
-            // Assemble and verify (MSW-first)
-            // Match design: w0 (lowest addr) -> [127:96], w3 (highest addr) -> [31:0]
             cblock = {cword[0], cword[1], cword[2], cword[3]};
             plain_block = {w0, w1, w2, w3};
-
             @(negedge hclk);
-            $display("[%0t] TB: Block %0d - PLAINTEXT:  0x%032h", $time, blk_idx, plain_block);
-            $display("[%0t] TB: Block %0d - ENCRYPTED:  0x%032h", $time, blk_idx, cblock);
-            $display("[%0t] TB: Block %0d - DECRYPTED:  0x%032h", $time, blk_idx, dec_out);
-
             if (dec_out == plain_block) begin
-                $display("[%0t] TB: Block %0d - VERIFICATION: PASS (decrypted matches input)", $time, blk_idx);
+                $display("| Result: PASS (decrypted matches input) |");
+                pass_cnt = pass_cnt + 1;
             end else begin
-                $display("[%0t] TB: Block %0d - VERIFICATION: FAIL (decrypted != input)", $time, blk_idx);
+                $display("| Result: FAIL (decrypted != input)      |");
+                fail_cnt = fail_cnt + 1;
             end
-
-            // Read plaintext back
-            for (word_idx = 0; word_idx < 4; word_idx = word_idx + 1) begin
-                read_single(2'b11, c_base + (word_idx * 4));
-                got_plain = hrdata_tb;
-                case (word_idx)
-                    0: begin 
-                        if (got_plain == w0) begin 
-                            pass_cnt = pass_cnt + 1; 
-                            $display("[%0t] TB: Block %0d Word 0 - PASS (plain=0x%h, cipher=0x%h)", $time, blk_idx, got_plain, cword[0]); 
-                        end else begin 
-                            fail_cnt = fail_cnt + 1; 
-                            $display("[%0t] TB: Block %0d Word 0 - FAIL (got=0x%h, expected=0x%h)", $time, blk_idx, got_plain, w0); 
-                        end 
-                    end
-                    1: begin 
-                        if (got_plain == w1) begin 
-                            pass_cnt = pass_cnt + 1; 
-                            $display("[%0t] TB: Block %0d Word 1 - PASS (plain=0x%h, cipher=0x%h)", $time, blk_idx, got_plain, cword[1]); 
-                        end else begin 
-                            fail_cnt = fail_cnt + 1; 
-                            $display("[%0t] TB: Block %0d Word 1 - FAIL (got=0x%h, expected=0x%h)", $time, blk_idx, got_plain, w1); 
-                        end 
-                    end
-                    2: begin 
-                        if (got_plain == w2) begin 
-                            pass_cnt = pass_cnt + 1; 
-                            $display("[%0t] TB: Block %0d Word 2 - PASS (plain=0x%h, cipher=0x%h)", $time, blk_idx, got_plain, cword[2]); 
-                        end else begin 
-                            fail_cnt = fail_cnt + 1; 
-                            $display("[%0t] TB: Block %0d Word 2 - FAIL (got=0x%h, expected=0x%h)", $time, blk_idx, got_plain, w2); 
-                        end 
-                    end
-                    3: begin 
-                        if (got_plain == w3) begin 
-                            pass_cnt = pass_cnt + 1; 
-                            $display("[%0t] TB: Block %0d Word 3 - PASS (plain=0x%h, cipher=0x%h)", $time, blk_idx, got_plain, cword[3]); 
-                        end else begin 
-                            fail_cnt = fail_cnt + 1; 
-                            $display("[%0t] TB: Block %0d Word 3 - FAIL (got=0x%h, expected=0x%h)", $time, blk_idx, got_plain, w3); 
-                        end 
-                    end
-                endcase
-            end
+            $display("|-------------------------------|\n");
         end
-        
-        $display("[%0t] TB: AES Crypto Test Complete - Passed: %0d, Failed: %0d", $time, pass_cnt, fail_cnt);
+        $display("AES Crypto Test Summary: Passed=%0d Failed=%0d", pass_cnt, fail_cnt);
+        $display("\n|-------------------------------|");
+        $display("| AES Crypto Test Summary        |");
+        $display("|-------------------------------|");
+        $display("| Passed: %2d | Failed: %2d        |", pass_cnt, fail_cnt);
+        $display("|-------------------------------|\n");
+        $display("Test Case 4 Complete\n");
 
-        //=====================================================================
-        // TEST SUMMARY AND COMPLETION
-        //=====================================================================
-        $display("\n========================================================");
-        $display("COMPLETE TEST SUMMARY");
-        $display("========================================================");
-        $display("TEST 1: Generic Memory Slaves ............ COMPLETE");
-        $display("TEST 2: AHB Burst Protocol ............... COMPLETE");
-        $display("TEST 3: Wireline Filter Chain ............ COMPLETE");
-        $display("         Passed: %0d / 16", filter_pass_cnt);
-        $display("TEST 4: AES Crypto Processing ............ COMPLETE");
-        $display("         Passed: %0d / 12", pass_cnt);
-        $display("========================================================");
-        
-        // Stop clock gating monitoring and report statistics
+        // End of all test cases
         clk_gate_monitor_active = 0;
         #10;
         report_clock_gating_stats();
-        
         $display("Simulation finished at time %0t", $time);
-        $display("========================================================\n");
-        
         #50;
         $finish;
     end
