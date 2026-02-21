@@ -41,25 +41,8 @@ module ahb_top(
     wire hreadyout;
     wire hresp;
 
-    // --- Gated Clock Signals ---
-    // Clock gating: Gate master clock during idle cycles (htrans == IDLE)
-    // Use latched idle signal to avoid glitches - sample on falling edge of hclk
-    wire bus_idle = (htrans == 2'b00);  // IDLE transaction type
-    reg idle_latched;
-    wire master_hclk;
-    
-    // Latch idle signal on falling edge of hclk
-    always @(negedge hclk or negedge hresetn) begin
-        if (!hresetn)
-            idle_latched <= 1'b0;
-        else
-            idle_latched <= bus_idle;  // Sample idle on falling edge
-    end
-    
-    // Gate master clock: clock passes through when NOT idle
-    assign master_hclk = hclk & (~idle_latched);
-    
-    // Slaves remain ungated for protocol compliance
+    // All modules use ungated hclk for protocol compliance
+    wire master_hclk = hclk;
     wire slave1_hclk = hclk;
     wire slave2_hclk = hclk;
     wire slave3_hclk = hclk;
@@ -87,7 +70,7 @@ module ahb_top(
     ahb_slave slave_2(.hclk(slave2_hclk), .hresetn(hresetn), .hsel(hsel_2), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_2), .hresp(hresp_2), .hrdata(hrdata_2));
     // Replace generic memory slave with filter slave (keeps AES slave untouched in slot 4)
     ahb_filter_slave slave_3(.hclk(slave3_hclk), .hresetn(hresetn), .hsel(hsel_3), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_3), .hresp(hresp_3), .hrdata(hrdata_3));
-    ahb_crypto_slave slave_4(.hclk(slave4_hclk), .hresetn(hresetn), .hsel(hsel_4), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_4), .hresp(hresp_4), .hrdata(hrdata_4));
+    ahb_crypto_slave slave_4(.hclk(hclk), .hresetn(hresetn), .hsel(hsel_4), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_4), .hresp(hresp_4), .hrdata(hrdata_4));
 
     // --- Mux Instantiation ---
     ahb_mux mux(.hrdata_1(hrdata_1), .hrdata_2(hrdata_2), .hrdata_3(hrdata_3), .hrdata_4(hrdata_4), .hreadyout_1(hreadyout_1), .hreadyout_2(hreadyout_2), .hreadyout_3(hreadyout_3), .hreadyout_4(hreadyout_4), .hresp_1(hresp_1), .hresp_2(hresp_2), .hresp_3(hresp_3), .hresp_4(hresp_4), .sel(sel), .hrdata(hrdata), .hreadyout(hreadyout), .hresp(hresp));
@@ -360,6 +343,8 @@ module ahb_crypto_slave(
                     2'd2: plaintext[63:32]  <= hwdata;
                     2'd3: plaintext[31:0]   <= hwdata;
                 endcase
+                // Always latch computed ciphertext after any write
+                ciphertext <= aes_out;
                 // Count received words; after 4 words mark write_complete
                 if (haddr[3:2] == 2'd3) begin
                     write_complete <= 1'b1;
@@ -367,8 +352,6 @@ module ahb_crypto_slave(
                     // reset per-word served flags for the new block
                     cipher_served <= 4'b0000;
                     plain_served <= 4'b0000;
-                    // latch computed ciphertext next cycle (aes_out is combinational)
-                    ciphertext <= aes_out;
                 end
                 hreadyout <= 1'b1; // write completes in one cycle
             end
@@ -380,15 +363,13 @@ module ahb_crypto_slave(
                 mask = 4'b0001 << haddr[3:2];
 
                 if (write_complete) begin
-                    // If ciphertext for this word hasn't been served yet, serve it first
+                    // If ciphertext for this word hasn't been served yet, serve it directly from ciphertext register
                     if (!(cipher_served & mask)) begin
-                        // ensure ciphertext is available; latch aes_out
-                        ciphertext <= aes_out;
                         case (haddr[3:2])
-                            2'd0: hrdata <= aes_out[127:96];
-                            2'd1: hrdata <= aes_out[95:64];
-                            2'd2: hrdata <= aes_out[63:32];
-                            2'd3: hrdata <= aes_out[31:0];
+                            2'd0: hrdata <= ciphertext[127:96];
+                            2'd1: hrdata <= ciphertext[95:64];
+                            2'd2: hrdata <= ciphertext[63:32];
+                            2'd3: hrdata <= ciphertext[31:0];
                         endcase
                         hreadyout <= 1'b1;
                         // mark ciphertext for this word as served (non-blocking update)

@@ -495,7 +495,11 @@ module ahb_top_tb();
             write_single(2'b11, c_base + 32'd8, w2);
             write_single(2'b11, c_base + 32'd12, w3);
 
-            // Read ciphertext
+
+            // Wait for AES encryption to complete (combinational or pipelined delay)
+            repeat(2) @(negedge hclk); // Add delay to ensure ciphertext is ready
+
+            // Read ciphertext (assuming MSW-first order; adjust if LSW-first is needed)
             $display("[%0t] TB: AES Block %0d - Reading ciphertexts", $time, blk_idx);
             for (word_idx = 0; word_idx < 4; word_idx = word_idx + 1) begin
                 read_single(2'b11, c_base + (word_idx * 4));
@@ -503,7 +507,8 @@ module ahb_top_tb();
                 $display("[%0t] TB: Block %0d Word %0d - Ciphertext: 0x%h", $time, blk_idx, word_idx, cword[word_idx]);
             end
 
-            // Assemble and verify
+            // Assemble and verify (MSW-first)
+            // Match design: w0 (lowest addr) -> [127:96], w3 (highest addr) -> [31:0]
             cblock = {cword[0], cword[1], cword[2], cword[3]};
             plain_block = {w0, w1, w2, w3};
 
@@ -511,7 +516,7 @@ module ahb_top_tb();
             $display("[%0t] TB: Block %0d - PLAINTEXT:  0x%032h", $time, blk_idx, plain_block);
             $display("[%0t] TB: Block %0d - ENCRYPTED:  0x%032h", $time, blk_idx, cblock);
             $display("[%0t] TB: Block %0d - DECRYPTED:  0x%032h", $time, blk_idx, dec_out);
-            
+
             if (dec_out == plain_block) begin
                 $display("[%0t] TB: Block %0d - VERIFICATION: PASS (decrypted matches input)", $time, blk_idx);
             end else begin
