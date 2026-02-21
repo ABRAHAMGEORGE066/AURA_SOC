@@ -520,6 +520,15 @@ module ahb_top_tb();
         #10;
         report_clock_gating_stats();
         $display("Simulation finished at time %0t", $time);
+        if (fail_cnt == 0) begin
+            $display("\n====================================");
+            $display("TESTBENCH SUCCESS: All tests passed!");
+            $display("====================================\n");
+        end else begin
+            $display("\n====================================");
+            $display("TESTBENCH FAILURE: Some tests failed.");
+            $display("====================================\n");
+        end
         #50;
         $finish;
     end

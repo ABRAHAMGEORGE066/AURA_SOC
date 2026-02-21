@@ -121,11 +121,11 @@ module ahb_filter_slave(
                 hreadyout <= 1'b1;
             end
 
-            // AHB write handling (single-beat writes)
+            // AHB write handling (burst and single-beat)
             if (hsel && hready && (htrans == T_NONSEQ || htrans == T_SEQ) && hwrite) begin
                 case (haddr[5:2]) // use lower word address bits (16-byte windows)
                     4'h0: begin // 0x00 DATA_IN (write pushes into in_fifo)
-                        // Always push to input FIFO for filter tests
+                        // Support burst: push on every valid SEQ or NONSEQ
                         if (in_count < FIFO_DEPTH) begin
                             in_fifo[in_tail] <= hwdata;
                             in_tail <= (in_tail + 1) % FIFO_DEPTH;
@@ -151,13 +151,14 @@ module ahb_filter_slave(
                 endcase
             end
 
-            // AHB read handling
+            // AHB read handling (burst and single-beat)
             if (hsel && hready && (htrans == T_NONSEQ || htrans == T_SEQ) && !hwrite) begin
                 case (haddr[5:2])
                     4'h0: begin // 0x00 DATA_IN (read not meaningful)
                         hrdata <= 32'h0; hreadyout <= 1'b1;
                     end
                     4'h1: begin // 0x04 DATA_OUT (read pops from out_fifo if available)
+                        // Support burst: pop on every valid SEQ or NONSEQ
                         if (out_count > 0) begin
                             hrdata <= out_fifo[out_head];
                             out_head <= (out_head + 1) % FIFO_DEPTH;
