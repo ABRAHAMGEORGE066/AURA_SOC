@@ -428,7 +428,8 @@ module ahb_filter_slave(
                     end
                     5'h3: begin // STATUS
                         // Pack counts into STATUS: [15:8]=in_count, [7:0]=out_count
-                        hrdata <= {16'd0, in_count[7:0], out_count[7:0]};
+                        // FIX: Manually pad with zeros instead of selecting [7:0] from 4-bit signals
+                        hrdata <= {16'd0, 4'b0, in_count, 4'b0, out_count};
                         hreadyout <= 1'b1;
                     end
                     5'hB: begin // 0x2C FEC_CONTROL read-back

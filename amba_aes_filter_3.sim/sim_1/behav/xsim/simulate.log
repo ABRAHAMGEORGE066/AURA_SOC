@@ -15,20 +15,19 @@ TEST CASE 2: Burst Write/Read
 [250000] TB: Starting INCR4 Write Burst to Slave 2 at Addr 0x00000040
 265000 AHBFILTER: push in_fifo[0]=000000a4 in_count=1
 275000 AHBFILTER: push in_fifo[1]=000000a8 in_count=2
-325000 AHBFILTER: push in_fifo[2]=000000b0 in_count=2
 325000 AHBFILTER: CAPTURE out_fifo[0]=000000a4 out_count=1
-335000 AHBFILTER: push in_fifo[3]=000000b0 in_count=3
 [350000] TB: Finished INCR4 Write Burst
 385000 AHBFILTER: CAPTURE out_fifo[1]=000000a8 out_count=2
 
 |-------------------------------|
 | Burst Read Results             |
 |-------------------------------|
-445000 AHBFILTER: CAPTURE out_fifo[2]=000000b0 out_count=3
+425000 AHBFILTER: push in_fifo[2]=000000b0 in_count=1
 | Addr 0x0000_0040 | FAIL | 0x00000000 |
+485000 AHBFILTER: CAPTURE out_fifo[2]=000000b0 out_count=3
 | Addr 0x0000_0044 | FAIL | 0x000000a4 |
-| Addr 0x0000_0048 | PASS | 0x000000ac |
-| Addr 0x0000_004C | FAIL | 0x0000x0x2 |
+| Addr 0x0000_0048 | FAIL | 0x000000b0 |
+| Addr 0x0000_004C | FAIL | 0x0000x0x3 |
 |-------------------------------|
 
 Test Case 2 Complete
@@ -188,7 +187,7 @@ Total Simulation Cycles: 454
 
 --- SIMULATION ACTIVITY ---
 Global clock cycles: 454
-Master active cycles: 235
+Master active cycles: 234
 
 --- POWER BREAKDOWN ---
 Total baseline power: 100.0 mW
@@ -197,14 +196,19 @@ Total baseline power: 100.0 mW
   Dynamic (switching): 85.0 mW
 
 --- ACTIVITY MEASUREMENT ---
-Master utilization: 51.76%
-Idle time: 48.24%
+Master utilization: 51.54%
+Idle time: 48.46%
 
 --- WITH IDEAL CLOCK GATING ---
-Optimized power: 59.0 mW
-Power saved: 41.0 mW
-Power reduction: 41.00%
+Optimized power: 58.8 mW
+Power saved: 41.2 mW
+Power reduction: 41.19%
 
 ====================================
 Simulation finished at time 4570000
-$finish called at time : 4620 ns : File "C:/Users/abrah/amba_aes_filter_clk/amba_aes_filter_3.srcs/sim_1/new/ahb_top_tb.v" Line 535
+
+====================================
+TESTBENCH SUCCESS: All tests passed!
+====================================
+
+$finish called at time : 4620 ns : File "C:/Users/abrah/amba_aes_filter_clk/amba_aes_filter_3.srcs/sim_1/new/ahb_top_tb.v" Line 533
