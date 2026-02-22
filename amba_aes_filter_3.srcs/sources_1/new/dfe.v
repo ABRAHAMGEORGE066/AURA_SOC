@@ -1,12 +1,12 @@
 module dfe #(
-    parameter DATA_WIDTH = 12
+    parameter DATA_WIDTH = 12,
+    parameter integer DFE_COEFF = 64  // feedback weight (default from architecture doc)
 )(
     input  wire                         clk,
     input  wire                         rst,
     input  wire                         enable,
 
     input  wire signed [DATA_WIDTH-1:0] din,     // from FIR
-    input  wire signed [DATA_WIDTH-1:0] dfe_coeff, // feedback weight
 
     output reg  signed [DATA_WIDTH-1:0] dout     // corrected output
 );
@@ -22,7 +22,7 @@ module dfe #(
             dout <= 0;
         end else if (enable) begin
             // Feedback computation
-            feedback <= prev_decision * dfe_coeff;
+            feedback <= prev_decision * DFE_COEFF;
 
             // Subtract feedback
             dout <= din - feedback;

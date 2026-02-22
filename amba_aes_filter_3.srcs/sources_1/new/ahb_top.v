@@ -67,6 +67,13 @@ module ahb_top(
     // Connect internal hreadyout to the monitoring port
     assign hreadyout_mon = hreadyout;
 
+    // --- Watchdog signals ---
+    wire [3:0]  slv_rst_n;           // per-slave isolated active-low resets
+    wire [3:0]  wdg_timeout_flags;   // sticky event flags (set on timeout or force-reset)
+    wire [31:0] wdg_total_timeouts;  // cumulative event counter (persists across local resets)
+    wire [3:0]  wdg_force_rst_w;     // SW force-reset bits (from filter-slave WDG_FORCE_RST reg)
+    wire [7:0]  wdg_timeout_cfg_w;   // SW timeout threshold  (from filter-slave WDG_TIMEOUT_CFG reg)
+
     // --- Master Instantiation ---
     ahb_mastern mastern(
         .hclk(master_hclk), .hresetn(hresetn), .enable(enable),
@@ -81,12 +88,39 @@ module ahb_top(
     // --- Decoder Instantiation ---
     ahb_decoder decoder(.sel(sel), .hsel_1(hsel_1), .hsel_2(hsel_2), .hsel_3(hsel_3), .hsel_4(hsel_4));
 
+    // --- Watchdog Instantiation ---
+    // Independently monitors all 4 slaves.  A hardware stall (hsel=1 AND
+    // hreadyout=0 for >= timeout_cfg cycles) or a SW write to WDG_FORCE_RST
+    // pulses slv_rst_n[N]=0 for RST_PULSE_LEN=10 cycles for that slave ONLY.
+    ahb_watchdog watchdog(
+        .hclk(hclk), .hresetn(hresetn),
+        .hsel    ({hsel_4,      hsel_3,      hsel_2,      hsel_1}),
+        .hreadyout({hreadyout_4, hreadyout_3, hreadyout_2, hreadyout_1}),
+        .slv_rst_n(slv_rst_n),
+        .timeout_flags(wdg_timeout_flags),
+        .total_timeouts(wdg_total_timeouts),
+        .force_reset(wdg_force_rst_w),
+        .timeout_cfg(wdg_timeout_cfg_w)
+    );
+
     // --- Slave Instantiations ---
-    ahb_slave slave_1(.hclk(slave1_hclk), .hresetn(hresetn), .hsel(hsel_1), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_1), .hresp(hresp_1), .hrdata(hrdata_1));
-    ahb_slave slave_2(.hclk(slave2_hclk), .hresetn(hresetn), .hsel(hsel_2), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_2), .hresp(hresp_2), .hrdata(hrdata_2));
-    // Replace generic memory slave with filter slave (keeps AES slave untouched in slot 4)
-    ahb_filter_slave slave_3(.hclk(slave3_hclk), .hresetn(hresetn), .hsel(hsel_3), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_3), .hresp(hresp_3), .hrdata(hrdata_3));
-    ahb_crypto_slave slave_4(.hclk(hclk), .hresetn(hresetn), .hsel(hsel_4), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_4), .hresp(hresp_4), .hrdata(hrdata_4));
+    // Each slave receives its own isolated reset from the watchdog.
+    // slv_rst_n[N] = hresetn AND NOT rst_active[N] — a watchdog event
+    // or SW force-reset pulses only that slave's reset line for 10 cycles.
+    ahb_slave slave_1(.hclk(slave1_hclk), .hresetn(slv_rst_n[0]), .hsel(hsel_1), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_1), .hresp(hresp_1), .hrdata(hrdata_1));
+    ahb_slave slave_2(.hclk(slave2_hclk), .hresetn(slv_rst_n[1]), .hsel(hsel_2), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_2), .hresp(hresp_2), .hrdata(hrdata_2));
+    ahb_filter_slave slave_3(
+        .hclk(slave3_hclk), .hresetn(slv_rst_n[2]),
+        .hsel(hsel_3), .haddr(haddr), .hwrite(hwrite), .hsize(hsize),
+        .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock),
+        .hwdata(hwdata), .hready(hready),
+        .hreadyout(hreadyout_3), .hresp(hresp_3), .hrdata(hrdata_3),
+        .wdg_status_in(wdg_timeout_flags),
+        .wdg_fault_cnt_in(wdg_total_timeouts),
+        .wdg_force_rst_out(wdg_force_rst_w),
+        .wdg_timeout_cfg_out(wdg_timeout_cfg_w)
+    );
+    ahb_crypto_slave slave_4(.hclk(hclk), .hresetn(slv_rst_n[3]), .hsel(hsel_4), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_4), .hresp(hresp_4), .hrdata(hrdata_4));
 
     // --- Mux Instantiation ---
     ahb_mux mux(.hrdata_1(hrdata_1), .hrdata_2(hrdata_2), .hrdata_3(hrdata_3), .hrdata_4(hrdata_4), .hreadyout_1(hreadyout_1), .hreadyout_2(hreadyout_2), .hreadyout_3(hreadyout_3), .hreadyout_4(hreadyout_4), .hresp_1(hresp_1), .hresp_2(hresp_2), .hresp_3(hresp_3), .hresp_4(hresp_4), .sel(sel), .hrdata(hrdata), .hreadyout(hreadyout), .hresp(hresp));

@@ -18,28 +18,30 @@ module ahb_clock_gate(
     output slave4_hclk   // Gated clock for slave 4
 );
 
-    // Safe clock gating: use flip-flop based enable, no latches
-    // Gated clocks are AND of hclk and enable signals registered on rising edge
+    // Clock gating uses latches to avoid glitches.
+    // Gate enable is updated on falling edge of hclk.
+
+    // Master clock gating: gate when not enabled
     reg master_gate;
-    reg slave1_gate, slave2_gate, slave3_gate, slave4_gate;
-
-    always @(posedge hclk or negedge hresetn) begin
-        if (!hresetn) begin
-            master_gate <= 1'b0;
-            slave1_gate <= 1'b0;
-            slave2_gate <= 1'b0;
-            slave3_gate <= 1'b0;
-            slave4_gate <= 1'b0;
-        end else begin
-            master_gate <= enable;
-            slave1_gate <= hsel_1;
-            slave2_gate <= hsel_2;
-            slave3_gate <= hsel_3;
-            slave4_gate <= hsel_4;
-        end
+    always @(enable or hclk) begin
+        if (!hclk) master_gate <= enable;
     end
-
     assign master_hclk = hclk & master_gate;
+
+    // Slave clock gating: gate when not selected
+    reg slave1_gate, slave2_gate, slave3_gate, slave4_gate;
+    always @(hsel_1 or hclk) begin
+        if (!hclk) slave1_gate <= hsel_1;
+    end
+    always @(hsel_2 or hclk) begin
+        if (!hclk) slave2_gate <= hsel_2;
+    end
+    always @(hsel_3 or hclk) begin
+        if (!hclk) slave3_gate <= hsel_3;
+    end
+    always @(hsel_4 or hclk) begin
+        if (!hclk) slave4_gate <= hsel_4;
+    end
     assign slave1_hclk = hclk & slave1_gate;
     assign slave2_hclk = hclk & slave2_gate;
     assign slave3_hclk = hclk & slave3_gate;

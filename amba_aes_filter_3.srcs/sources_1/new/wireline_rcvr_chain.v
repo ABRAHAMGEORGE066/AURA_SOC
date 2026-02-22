@@ -15,7 +15,15 @@ module wireline_rcvr_chain #(
     input  wire                         rst,
     input  wire                         enable,
     input  wire signed [DATA_WIDTH-1:0] data_in,
-    output wire signed [DATA_WIDTH-1:0] data_out
+    // Stage 7 FEC control inputs
+    input  wire                         fec_err_inject, // 1 = inject a bit error (testing only)
+    input  wire [4:0]                   fec_err_bit,    // which codeword bit (0-16) to flip
+    // Filtered + FEC-corrected output
+    output wire signed [DATA_WIDTH-1:0] data_out,
+    // FEC status outputs
+    output wire [4:0]                   fec_syndrome,
+    output wire                         fec_error_detected,
+    output wire                         fec_error_corrected
 );
 
     // Internal signals connecting filter stages
@@ -24,7 +32,12 @@ module wireline_rcvr_chain #(
     wire signed [DATA_WIDTH-1:0] fir_eq_out;
     wire signed [DATA_WIDTH-1:0] dfe_out;
     wire signed [DATA_WIDTH-1:0] glitch_out;
-    // wire signed [DATA_WIDTH-1:0] lpf_out;  // final output
+    wire signed [DATA_WIDTH-1:0] lpf_out;    // LPF output feeds into FEC encoder
+
+    // FEC pipeline signals (Hamming(17,12))
+    localparam FEC_CW_WIDTH = 17;
+    wire [FEC_CW_WIDTH-1:0] fec_encoded_cw; // encoder output (registered)
+    wire [FEC_CW_WIDTH-1:0] fec_channel_cw; // codeword after optional error injection
 
     //==================================================================
     // STAGE 1: CTLE (Continuous Time Linear Equalizer)
@@ -65,7 +78,7 @@ module wireline_rcvr_chain #(
     //==================================================================
     fir_equalizer #(
         .DATA_WIDTH(DATA_WIDTH),
-        .NUM_TAPS(7)           // 7-tap FIR filter
+        .TAP_NUM(7)            // 7-tap FIR filter
     ) fir_eq_stage (
         .clk(clk),
         .rst(rst),
@@ -82,7 +95,7 @@ module wireline_rcvr_chain #(
     //==================================================================
     dfe #(
         .DATA_WIDTH(DATA_WIDTH),
-        .NUM_TAPS(4)           // 4-tap feedback filter
+        .DFE_COEFF(64)         // feedback weight
     ) dfe_stage (
         .clk(clk),
         .rst(rst),
@@ -98,7 +111,7 @@ module wireline_rcvr_chain #(
     //==================================================================
     glitch_filter #(
         .DATA_WIDTH(DATA_WIDTH),
-        .THRESHOLD(512)        // Spike detection threshold
+        .STABLE_CNT(3)         // stable cycles before accepting new value
     ) glitch_stage (
         .clk(clk),
         .rst(rst),
@@ -119,7 +132,52 @@ module wireline_rcvr_chain #(
         .rst(rst),
         .enable(enable),
         .din(glitch_out),
-        .dout(data_out)
+        .dout(lpf_out)       // feeds into FEC encoder (Stage 7)
+    );
+
+    //==================================================================
+    // STAGE 7: FEC – Hamming(17,12) Forward Error Correction
+    // Purpose: Encode LPF output into a Hamming codeword, optionally
+    //          inject a single-bit channel error (for testing), then
+    //          decode and correct any single-bit error.  The corrected
+    //          data becomes the final data_out of the chain.
+    //          Adds 2 clock cycles of pipeline latency.
+    //          Total chain latency: 8 clock cycles.
+    //==================================================================
+    fec_encoder #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .CODEWORD_WIDTH(FEC_CW_WIDTH)
+    ) fec_enc_stage (
+        .clk(clk),
+        .rst(rst),
+        .enable(enable),
+        .din(lpf_out),
+        .codeword(fec_encoded_cw)
+    );
+
+    // Optional single-bit error injection – simulates a corrupted channel bit
+    genvar fec_gi;
+    generate
+        for (fec_gi = 0; fec_gi < FEC_CW_WIDTH; fec_gi = fec_gi + 1) begin : fec_inj
+            assign fec_channel_cw[fec_gi] =
+                (fec_err_inject && (fec_err_bit == fec_gi))
+                ? ~fec_encoded_cw[fec_gi]
+                :  fec_encoded_cw[fec_gi];
+        end
+    endgenerate
+
+    fec_decoder #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .CODEWORD_WIDTH(FEC_CW_WIDTH)
+    ) fec_dec_stage (
+        .clk(clk),
+        .rst(rst),
+        .enable(enable),
+        .codeword_in(fec_channel_cw),
+        .dout(data_out),
+        .syndrome(fec_syndrome),
+        .error_detected(fec_error_detected),
+        .error_corrected(fec_error_corrected)
     );
 
 endmodule
