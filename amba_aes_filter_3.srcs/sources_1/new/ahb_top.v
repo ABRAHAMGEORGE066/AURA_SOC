@@ -1,5 +1,6 @@
 `timescale 1ns / 1ps
 `include "ahb_clock_gate.v"
+`include "ahb_watchdog.v"
 
 //======================================================================
 // MODULE: ahb_top
@@ -43,11 +44,12 @@ module ahb_top(
     wire hresp;
 
     // Clock gating: instantiate ahb_clock_gate
-    wire master_hclk;
-    wire slave1_hclk;
-    wire slave2_hclk;
-    wire slave3_hclk;
-    wire slave4_hclk;
+
+    wire master_ce;
+    wire slave1_ce;
+    wire slave2_ce;
+    wire slave3_ce;
+    wire slave4_ce;
 
     ahb_clock_gate clk_gate_inst(
         .hclk(hclk),
@@ -57,11 +59,11 @@ module ahb_top(
         .hsel_2(hsel_2),
         .hsel_3(hsel_3),
         .hsel_4(hsel_4),
-        .master_hclk(master_hclk),
-        .slave1_hclk(slave1_hclk),
-        .slave2_hclk(slave2_hclk),
-        .slave3_hclk(slave3_hclk),
-        .slave4_hclk(slave4_hclk)
+        .master_ce(master_ce),
+        .slave1_ce(slave1_ce),
+        .slave2_ce(slave2_ce),
+        .slave3_ce(slave3_ce),
+        .slave4_ce(slave4_ce)
     );
 
     // Connect internal hreadyout to the monitoring port
@@ -76,7 +78,7 @@ module ahb_top(
 
     // --- Master Instantiation ---
     ahb_mastern mastern(
-        .hclk(master_hclk), .hresetn(hresetn), .enable(enable),
+        .hclk(hclk), .hresetn(hresetn), .enable(master_ce),
         .data_in(data_in), .addr(addr), .wr(wr),
         .burst_type(burst_type), .hreadyout(hreadyout), .hresp(hresp),
         .hrdata(hrdata), .slave_sel(slave_sel), .sel(sel),
@@ -107,10 +109,10 @@ module ahb_top(
     // Each slave receives its own isolated reset from the watchdog.
     // slv_rst_n[N] = hresetn AND NOT rst_active[N] — a watchdog event
     // or SW force-reset pulses only that slave's reset line for 10 cycles.
-    ahb_slave slave_1(.hclk(slave1_hclk), .hresetn(slv_rst_n[0]), .hsel(hsel_1), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_1), .hresp(hresp_1), .hrdata(hrdata_1));
-    ahb_slave slave_2(.hclk(slave2_hclk), .hresetn(slv_rst_n[1]), .hsel(hsel_2), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_2), .hresp(hresp_2), .hrdata(hrdata_2));
+    ahb_slave slave_1(.hclk(hclk), .hresetn(slv_rst_n[0]), .hsel(hsel_1 & slave1_ce), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_1), .hresp(hresp_1), .hrdata(hrdata_1));
+    ahb_slave slave_2(.hclk(hclk), .hresetn(slv_rst_n[1]), .hsel(hsel_2 & slave2_ce), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_2), .hresp(hresp_2), .hrdata(hrdata_2));
     ahb_filter_slave slave_3(
-        .hclk(slave3_hclk), .hresetn(slv_rst_n[2]),
+        .hclk(hclk), .hresetn(slv_rst_n[2]),
         .hsel(hsel_3), .haddr(haddr), .hwrite(hwrite), .hsize(hsize),
         .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock),
         .hwdata(hwdata), .hready(hready),
@@ -120,7 +122,7 @@ module ahb_top(
         .wdg_force_rst_out(wdg_force_rst_w),
         .wdg_timeout_cfg_out(wdg_timeout_cfg_w)
     );
-    ahb_crypto_slave slave_4(.hclk(hclk), .hresetn(slv_rst_n[3]), .hsel(hsel_4), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_4), .hresp(hresp_4), .hrdata(hrdata_4));
+    ahb_crypto_slave slave_4(.hclk(hclk), .hresetn(slv_rst_n[3]), .hsel(hsel_4 & slave4_ce), .haddr(haddr), .hwrite(hwrite), .hsize(hsize), .hburst(hburst), .hprot(hprot), .htrans(htrans), .hmastlock(hmastlock), .hwdata(hwdata), .hready(hready), .hreadyout(hreadyout_4), .hresp(hresp_4), .hrdata(hrdata_4));
 
     // --- Mux Instantiation ---
     ahb_mux mux(.hrdata_1(hrdata_1), .hrdata_2(hrdata_2), .hrdata_3(hrdata_3), .hrdata_4(hrdata_4), .hreadyout_1(hreadyout_1), .hreadyout_2(hreadyout_2), .hreadyout_3(hreadyout_3), .hreadyout_4(hreadyout_4), .hresp_1(hresp_1), .hresp_2(hresp_2), .hresp_3(hresp_3), .hresp_4(hresp_4), .sel(sel), .hrdata(hrdata), .hreadyout(hreadyout), .hresp(hresp));
@@ -391,7 +393,6 @@ module ahb_crypto_slave(
                 endcase
                 // Only latch ciphertext after all 4 words are written
                 if (haddr[3:2] == 2'd3) begin
-                    #1; // Wait one cycle for AES output to stabilize
                     ciphertext <= aes_out;
                     write_complete <= 1'b1;
                     serve_cipher_next <= 1'b1;

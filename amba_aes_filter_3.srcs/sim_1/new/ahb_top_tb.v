@@ -116,11 +116,11 @@ module ahb_top_tb();
     wire        hreadyout_tb;
     
     // Clock gating monitoring signals
-    wire master_hclk_mon;
-    wire slave1_hclk_mon;
-    wire slave2_hclk_mon;
-    wire slave3_hclk_mon;
-    wire slave4_hclk_mon;
+    wire master_ce_mon;
+    wire slave1_ce_mon;
+    wire slave2_ce_mon;
+    wire slave3_ce_mon;
+    wire slave4_ce_mon;
     
     // Clock gating statistics
     integer global_clk_cycles;
@@ -154,11 +154,11 @@ module ahb_top_tb();
     //=================================================================
     // ACCESS GATED CLOCK SIGNALS (Monitor actual gated clocks from DUT)
     //=================================================================
-    assign master_hclk_mon  = dut.master_hclk;  // Access internal gated master clock
-    assign slave1_hclk_mon  = dut.slave1_hclk;
-    assign slave2_hclk_mon  = dut.slave2_hclk;
-    assign slave3_hclk_mon  = dut.slave3_hclk;
-    assign slave4_hclk_mon  = dut.slave4_hclk;
+    assign master_ce_mon  = dut.master_ce;  // Monitor clock enable for master
+    assign slave1_ce_mon  = dut.slave1_ce;
+    assign slave2_ce_mon  = dut.slave2_ce;
+    assign slave3_ce_mon  = dut.slave3_ce;
+    assign slave4_ce_mon  = dut.slave4_ce;
 
     //=================================================================
     // CLOCK GENERATION (10ns period = 100MHz)
@@ -192,7 +192,7 @@ module ahb_top_tb();
         #1;
         
         forever begin
-            @(posedge master_hclk_mon);
+            @(posedge master_ce_mon);
             if (clk_gate_monitor_active)
                 master_clk_cycles = master_clk_cycles + 1;
         end
@@ -1018,7 +1018,7 @@ module ahb_top_tb();
                      $time, tmr_errcnt_rd);
             tmr_pass_cnt = tmr_pass_cnt + 1;
         end else begin
-            $display("[%0t] TB: TMR-B RESULT [1/2]: FAIL (expected TMR_ERR_COUNT >= 1, got 0)");
+            $display("[%0t] TB: TMR-B RESULT [1/2]: FAIL (expected TMR_ERR_COUNT >= 1, got 0)", $time);
             tmr_fail_cnt = tmr_fail_cnt + 1;
         end
 
@@ -1028,10 +1028,10 @@ module ahb_top_tb();
                      $time);
             tmr_pass_cnt = tmr_pass_cnt + 1;
         end else if (tmr_errcnt_rd >= 32'd1) begin
-            $display("[%0t] TB: TMR-B RESULT [2/2]: PASS (filter settled to 0x7FF at read time; error count confirmed mismatch occurred)");
+            $display("[%0t] TB: TMR-B RESULT [2/2]: PASS (filter settled to 0x7FF at read time; error count confirmed mismatch occurred)", $time);
             tmr_pass_cnt = tmr_pass_cnt + 1;
         end else begin
-            $display("[%0t] TB: TMR-B RESULT [2/2]: FAIL (mismatch never detected)");
+            $display("[%0t] TB: TMR-B RESULT [2/2]: FAIL (mismatch never detected)", $time);
             tmr_fail_cnt = tmr_fail_cnt + 1;
         end
 

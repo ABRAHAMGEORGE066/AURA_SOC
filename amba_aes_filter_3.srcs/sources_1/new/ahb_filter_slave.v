@@ -1,4 +1,7 @@
 `timescale 1ns / 1ps
+`include "tmr_voter.v"
+`include "fec_encoder.v"
+`include "fec_decoder.v"
 //======================================================================
 // MODULE: ahb_filter_slave
 // DESCRIPTION: Memory-mapped AHB slave that exposes a small FIFO-based
