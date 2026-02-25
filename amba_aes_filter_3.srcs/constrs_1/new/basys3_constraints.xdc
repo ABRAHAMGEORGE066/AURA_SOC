@@ -1,7 +1,14 @@
 ## Clock signal
 set_property PACKAGE_PIN W5 [get_ports CLK100MHZ]
 	set_property IOSTANDARD LVCMOS33 [get_ports CLK100MHZ]
-	create_clock -add -name sys_clk_pin -period 10.00 -waveform {0 5} [get_ports CLK100MHZ]
+	create_clock -add -name sys_clk_pin -period 20.00 -waveform {0 10} [get_ports CLK100MHZ]
+
+	# Timing constraints for top-level ports (assume 2ns input/output delay)
+	set_input_delay 4.0 -clock [get_clocks sys_clk_pin] [get_ports btnC]
+	set_input_delay 4.0 -clock [get_clocks sys_clk_pin] [get_ports RsRx]
+	set_input_delay 4.0 -clock [get_clocks sys_clk_pin] [get_ports CLK100MHZ]
+	set_output_delay 4.0 -clock [get_clocks sys_clk_pin] [get_ports RsTx]
+	set_output_delay 4.0 -clock [get_clocks sys_clk_pin] [get_ports {LED[*]}]
 
 ## Reset Button (Center Button)
 set_property PACKAGE_PIN U18 [get_ports btnC]
