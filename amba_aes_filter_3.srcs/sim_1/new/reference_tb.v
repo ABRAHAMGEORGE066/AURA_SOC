@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module ahb_top_tb();
+module reference_tb();
     //=================================================================
     // CLOCK, RESET, AND BASIC AHB SIGNALS
     //=================================================================

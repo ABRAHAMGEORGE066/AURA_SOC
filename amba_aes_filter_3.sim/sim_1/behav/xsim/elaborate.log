@@ -5,6 +5,8 @@ Running: C:/Xilinx/2025.1/Vivado/bin/unwrapped/win64.o/xelab.exe --incr --debug 
 Using 2 slave threads.
 Starting static elaboration
 Pass Through NonSizing Optimizer
-WARNING: [VRFC 10-3705] select index 7 into 'in_count' is out of bounds [C:/Users/abrah/amba_aes_filter_clk/amba_aes_filter_3.srcs/sources_1/new/ahb_filter_slave.v:176]
-Completed static elaboration
-INFO: [XSIM 43-4323] No Change in HDL. Linking previously generated obj files to create kernel
+ERROR: [VRFC 10-2063] Module <ahb_watchdog> not found while processing module instance <watchdog> [C:/Users/abrah/amba_aes_filter_clk/amba_aes_filter_3.srcs/sources_1/new/ahb_top.v:95]
+ERROR: [VRFC 10-2063] Module <tmr_voter> not found while processing module instance <inst_lpf_tmr> [C:/Users/abrah/amba_aes_filter_clk/amba_aes_filter_3.srcs/sources_1/new/ahb_filter_slave.v:186]
+ERROR: [VRFC 10-2063] Module <fec_encoder> not found while processing module instance <inst_fec_enc> [C:/Users/abrah/amba_aes_filter_clk/amba_aes_filter_3.srcs/sources_1/new/ahb_filter_slave.v:284]
+ERROR: [VRFC 10-2063] Module <fec_decoder> not found while processing module instance <inst_fec_dec> [C:/Users/abrah/amba_aes_filter_clk/amba_aes_filter_3.srcs/sources_1/new/ahb_filter_slave.v:299]
+ERROR: [XSIM 43-3322] Static elaboration of top level Verilog design unit(s) in library work failed.

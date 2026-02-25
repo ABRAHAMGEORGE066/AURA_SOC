@@ -79,6 +79,13 @@ module ahb_top_tb();
     localparam WDG_TIMEOUT_CFG_ADDR = 32'h0000_007C;  // WDG_TIMEOUT_CFG
 
     //=================================================================
+    // COMBINED FAULT TEST VARIABLES
+    //=================================================================
+    integer combined_pass_cnt;
+    integer combined_fail_cnt;
+    reg [11:0] golden_output;
+
+    //=================================================================
     // FEC TEST VARIABLES
     //=================================================================
     integer fec_pass_cnt;
@@ -1336,6 +1343,75 @@ module ahb_top_tb();
         $display("========================================================");
 
         //=====================================================================
+        // TEST 8: Combined Fault Stress Test (TMR + FEC)
+        // Verify that the system can recover from simultaneous faults in
+        // different layers (e.g., LPF hardware fault + FEC transmission error).
+        //=====================================================================
+        $display("\n========================================================");
+        $display("TEST 8: Combined Fault Stress Test (Layer 1 TMR + Layer 2 FEC)");
+        $display("========================================================");
+        $display("[%0t] TB: Strategy: 1. Run Golden (no fault). 2. Run with DOUBLE fault. 3. Compare.", $time);
+        
+        combined_pass_cnt = 0;
+        combined_fail_cnt = 0;
+        
+        // Reset to clear previous states
+        reset_dut();
+        drain_filter_fifo;
+        
+        // --- STEP 1: GOLDEN RUN (No Faults) ---
+        write_single(2'b10, LPF_TMR_CTRL_ADDR, 32'h0000_0000); // No TMR Fault
+        write_single(2'b10, FEC_CTRL_ADDR, 32'h0000_0000);     // No FEC Fault
+        write_single(2'b10, 32'h0000_0008, 32'h0000_0001);     // Enable Filter
+        
+        filter_input = 12'h123;
+        write_single(2'b10, FILT_DATA_ADDR, {20'b0, filter_input});
+        repeat(20) @(negedge hclk); // Wait for pipeline
+        read_single(2'b10, FILT_DATA_ADDR);
+        golden_output = hrdata_tb[11:0];
+        $display("[%0t] TB: Golden Output (No Faults): 0x%03h", $time, golden_output);
+        
+        // --- STEP 2: INJECT SIMULTANEOUS FAULTS ---
+        $display("[%0t] TB: Injecting LPF Copy-B fault AND FEC Bit-5 error simultaneously...", $time);
+        write_single(2'b10, LPF_TMR_CTRL_ADDR, 32'h0000_0001); // TMR Fault (Copy B -> 0)
+        write_single(2'b10, FEC_CTRL_ADDR, 32'h0000_000B);     // FEC Fault (Bit 5 flip)
+        
+        write_single(2'b10, FILT_DATA_ADDR, {20'b0, filter_input});
+        repeat(20) @(negedge hclk);
+        
+        // --- STEP 3: VERIFY RECOVERY ---
+        read_single(2'b10, LPF_TMR_STATUS_ADDR);
+        tmr_status_rd = hrdata_tb;
+        read_single(2'b10, FEC_STATUS_ADDR);
+        fec_status_rd = hrdata_tb;
+        read_single(2'b10, FILT_DATA_ADDR);
+        filter_output = hrdata_tb[11:0];
+        
+        $display("[%0t] TB: Faulty Run Output: 0x%03h", $time, filter_output);
+        
+        // Check A: Data Integrity (Must match golden)
+        if (filter_output == golden_output) begin
+             $display("[%0t] TB: Combined Result [1/3]: PASS (Data correct despite double fault)", $time);
+             combined_pass_cnt = combined_pass_cnt + 1;
+        end else begin
+             $display("[%0t] TB: Combined Result [1/3]: FAIL (Data corrupted: expected 0x%03h, got 0x%03h)", $time, golden_output, filter_output);
+             combined_fail_cnt = combined_fail_cnt + 1;
+        end
+        
+        // Check B: Fault Mechanisms Triggered
+        if (tmr_status_rd[0] == 1'b1 && fec_status_rd[0] == 1'b1) begin
+             $display("[%0t] TB: Combined Result [2/3]: PASS (Both TMR and FEC detected errors)", $time);
+             combined_pass_cnt = combined_pass_cnt + 1;
+        end else begin
+             $display("[%0t] TB: Combined Result [2/3]: FAIL (Detection missing: TMR=0x%h, FEC=0x%h)", $time, tmr_status_rd, fec_status_rd);
+             combined_fail_cnt = combined_fail_cnt + 1;
+        end
+        
+        // Cleanup
+        write_single(2'b10, LPF_TMR_CTRL_ADDR, 32'h0000_0000);
+        write_single(2'b10, FEC_CTRL_ADDR, 32'h0000_0000);
+
+        //=====================================================================
         // TEST SUMMARY AND COMPLETION
         //=====================================================================
         $display("\n========================================================");
@@ -1365,6 +1441,9 @@ module ahb_top_tb();
         $display("         Sub-C (Fault counter)      : WDG_FAULT_CNT persists across reset");
         $display("         Sub-D (Threshold config)   : WDG_TIMEOUT_CFG read/write");
         $display("         Passed: %0d / %0d", wdg_pass_cnt, wdg_pass_cnt + wdg_fail_cnt);
+        $display("TEST 8: Combined Fault Stress ...... COMPLETE");
+        $display("         Simultaneous TMR + FEC faults corrected");
+        $display("         Passed: %0d / %0d", combined_pass_cnt, combined_pass_cnt + combined_fail_cnt);
         $display("========================================================");
         $display("FAULT TOLERANCE LAYERS:");
         $display("  Layer 1 - TMR : 3x redundancy on LPF + Glitch + DC offset (9 copies, 3 voters) - ZERO latency");
