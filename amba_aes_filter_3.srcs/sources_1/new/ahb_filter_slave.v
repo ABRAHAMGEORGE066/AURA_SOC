@@ -39,6 +39,15 @@ module ahb_filter_slave(
     output wire [7:0]  wdg_timeout_cfg_out   // SW programmable timeout threshold
 );
 
+    // Event signal registers for edge detection
+    // Event signal registers for edge detection (two-stage for proper edge detection)
+    reg fec_error_corrected_r, fec_error_corrected_rr;
+    reg tmr_mismatch_r, tmr_mismatch_rr;
+    reg lpf_mismatch_r, lpf_mismatch_rr;
+    reg glitch_mismatch_r, glitch_mismatch_rr;
+    reg [4:0] fec_syndrome_r;
+    reg fec_error_detected_r;
+
     // Register map (word offsets, byte-addressable via haddr):
     // 0x00 - DATA_IN   (write only)  : push 32-bit sample to input FIFO
     // 0x04 - DATA_OUT  (read only)   : pop 32-bit filtered sample from output FIFO
@@ -156,6 +165,8 @@ module ahb_filter_slave(
     // Watchdog interface registers (0x70 - 0x7C)
     reg  [3:0]  wdg_force_rst_reg;    // SW force-reset trigger (bit N = slave N+1)
     reg  [7:0]  wdg_timeout_cfg_reg;  // SW timeout threshold (0=disabled, default=200 cycles)
+    reg  [3:0]  wdg_status_latched;
+    reg  [31:0] wdg_fault_cnt_latched;
     assign wdg_force_rst_out   = wdg_force_rst_reg;
     assign wdg_timeout_cfg_out = wdg_timeout_cfg_reg;
 
@@ -293,7 +304,7 @@ module ahb_filter_slave(
     generate
         for (fec_gi = 0; fec_gi < FEC_CW_WIDTH; fec_gi = fec_gi + 1) begin : fec_inj_loop
             assign fec_channel_cw[fec_gi] =
-                (fec_err_inject && (fec_err_bit == fec_gi))
+                (fec_err_inject && (fec_err_bit != 0) && (fec_err_bit - 1 == fec_gi))
                 ? ~fec_encoded_cw[fec_gi]
                 :  fec_encoded_cw[fec_gi];
         end
@@ -336,6 +347,23 @@ module ahb_filter_slave(
             glitch_tmr_error_count <= 32'd0;
             wdg_force_rst_reg   <= 4'd0;
             wdg_timeout_cfg_reg <= 8'd200;   // default: 200 clock cycles
+            wdg_status_latched <= 4'd0;
+            wdg_fault_cnt_latched <= 32'd0;
+            // Latch watchdog status and fault count every cycle
+            wdg_status_latched <= wdg_status_in;
+            wdg_fault_cnt_latched <= wdg_fault_cnt_in;
+
+            // Reset FEC/TMR event registers
+            fec_error_corrected_r <= 1'b0;
+            fec_error_corrected_rr <= 1'b0;
+            tmr_mismatch_r <= 1'b0;
+            tmr_mismatch_rr <= 1'b0;
+            lpf_mismatch_r <= 1'b0;
+            lpf_mismatch_rr <= 1'b0;
+            glitch_mismatch_r <= 1'b0;
+            glitch_mismatch_rr <= 1'b0;
+            fec_syndrome_r <= 5'd0;
+            fec_error_detected_r <= 1'b0;
         end else begin
             // Default ready behavior
             if (!hsel) begin
@@ -439,11 +467,11 @@ module ahb_filter_slave(
                         hrdata <= fec_control_reg; hreadyout <= 1'b1;
                     end
                     5'hC: begin // 0x30 FEC_STATUS (bit0=err_detected, bit1=err_corrected)
-                        hrdata <= {30'd0, fec_error_corrected_w, fec_error_detected_w};
+                        hrdata <= {30'd0, fec_error_corrected_r, fec_error_detected_r};
                         hreadyout <= 1'b1;
                     end
                     5'hD: begin // 0x34 FEC_SYNDROME (last syndrome value)
-                        hrdata <= {27'd0, fec_syndrome_w};
+                        hrdata <= {27'd0, fec_syndrome_r};
                         hreadyout <= 1'b1;
                     end
                     5'hE: begin // 0x38 FEC_ERR_COUNT (cumulative corrected errors)
@@ -487,11 +515,11 @@ module ahb_filter_slave(
                         hreadyout <= 1'b1;
                     end
                     5'h1C: begin // 0x70 WDG_STATUS: sticky timeout flags per slave
-                        hrdata <= {28'd0, wdg_status_in};
+                        hrdata <= {28'd0, wdg_status_latched};
                         hreadyout <= 1'b1;
                     end
                     5'h1D: begin // 0x74 WDG_FAULT_CNT: cumulative watchdog event count
-                        hrdata <= wdg_fault_cnt_in;
+                        hrdata <= wdg_fault_cnt_latched;
                         hreadyout <= 1'b1;
                     end
                     5'h1E: begin // 0x78 WDG_FORCE_RST read-back
@@ -557,16 +585,27 @@ module ahb_filter_slave(
                 end
             end
 
-            // Increment FEC error counter each time a bit-error is corrected
-            if (fec_error_corrected_w)
-                fec_error_count <= fec_error_count + 1;
+            // Register previous values for edge detection and FEC status
+            // Two-stage event registration for proper edge detection
+            fec_error_corrected_rr <= fec_error_corrected_r;
+            fec_error_corrected_r  <= fec_error_corrected_w;
+            tmr_mismatch_rr        <= tmr_mismatch_r;
+            tmr_mismatch_r         <= tmr_mismatch_w;
+            lpf_mismatch_rr        <= lpf_mismatch_r;
+            lpf_mismatch_r         <= lpf_mismatch_w;
+            glitch_mismatch_rr     <= glitch_mismatch_r;
+            glitch_mismatch_r      <= glitch_mismatch_w;
+            fec_syndrome_r         <= fec_syndrome_w;
+            fec_error_detected_r   <= fec_error_detected_w;
 
-            // Increment mismatch counters each cycle any copy disagrees (per stage)
-            if (tmr_mismatch_w)
+            // Increment counters on rising edge of event (detected by two-stage reg)
+            if (fec_error_corrected_r && !fec_error_corrected_rr)
+                fec_error_count <= fec_error_count + 1;
+            if (tmr_mismatch_r && !tmr_mismatch_rr)
                 tmr_error_count <= tmr_error_count + 1;
-            if (lpf_mismatch_w)
+            if (lpf_mismatch_r && !lpf_mismatch_rr)
                 lpf_tmr_error_count <= lpf_tmr_error_count + 1;
-            if (glitch_mismatch_w)
+            if (glitch_mismatch_r && !glitch_mismatch_rr)
                 glitch_tmr_error_count <= glitch_tmr_error_count + 1;
         end
     end

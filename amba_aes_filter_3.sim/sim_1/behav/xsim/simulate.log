@@ -1,0 +1,392 @@
+Time resolution is 1 ps
+[20000] TB: DUT Reset Complete
+
+========================================================
+TEST 1: Single Write/Read to Generic Memory Slaves
+========================================================
+[50000] TB: Wrote 0xAAAAAAAA to Slave 1 @ 0x0000_0010
+[90000] TB: Read from Slave 1 @ 0x0000_0010 -> 0xaaaaaaaa
+[120000] TB: Wrote 0xBBBBBBBB to Slave 2 @ 0x0000_0020
+[160000] TB: Read from Slave 2 @ 0x0000_0020 -> 0xbbbbbbbb
+
+========================================================
+TEST 2: 4-Beat Burst Write and Single Read Verify
+========================================================
+[170000] TB: Starting INCR4 Write Burst to Slave 2 at Addr 0x00000040
+[210000] TB: Finished INCR4 Write Burst
+[250000] TB: Burst Read addr 0x0000_0040 -> 0x0000000x
+[290000] TB: Burst Read addr 0x0000_0044 -> 0xxxxxxxxx
+[330000] TB: Burst Read addr 0x0000_0048 -> 0x000000b0
+[370000] TB: Burst Read addr 0x0000_004C -> 0x00000000
+
+========================================================
+TEST 3: Filter Chain Processing (AMBA + Wireline Filters)
+========================================================
+[370000] TB: Testing 6-stage filter chain pipeline
+[370000] TB: Filter Order: CTLE->DC-Offset->FIR-EQ->DFE->Glitch->LPF
+[370000] TB: Filter test vectors initialized
+[370000] TB: Filter Test 0 - Input: 0xxxx (    x)
+[510000] TB: Filter Test 0 - Output: 0xxxx (    x)
+[510000] TB: Filter Test 0 - RESULT: FAIL (Output out of range)
+[530000] TB: Filter Test 1 - Input: 0x200 (  512)
+[670000] TB: Filter Test 1 - Output: 0x000 (    0)
+[670000] TB: Filter Test 1 - RESULT: PASS (Output in valid range)
+[690000] TB: Filter Test 2 - Input: 0x400 ( 1024)
+[830000] TB: Filter Test 2 - Output: 0x000 (    0)
+[830000] TB: Filter Test 2 - RESULT: PASS (Output in valid range)
+[850000] TB: Filter Test 3 - Input: 0x7ff ( 2047)
+[990000] TB: Filter Test 3 - Output: 0x000 (    0)
+[990000] TB: Filter Test 3 - RESULT: PASS (Output in valid range)
+[1010000] TB: Filter Test 4 - Input: 0x800 (-2048)
+[1150000] TB: Filter Test 4 - Output: 0x000 (    0)
+[1150000] TB: Filter Test 4 - RESULT: PASS (Output in valid range)
+[1170000] TB: Filter Test 5 - Input: 0xa00 (-1536)
+[1310000] TB: Filter Test 5 - Output: 0x000 (    0)
+[1310000] TB: Filter Test 5 - RESULT: PASS (Output in valid range)
+[1330000] TB: Filter Test 6 - Input: 0xc00 (-1024)
+[1470000] TB: Filter Test 6 - Output: 0x000 (    0)
+[1470000] TB: Filter Test 6 - RESULT: PASS (Output in valid range)
+[1490000] TB: Filter Test 7 - Input: 0xfff (   -1)
+[1630000] TB: Filter Test 7 - Output: 0x000 (    0)
+[1630000] TB: Filter Test 7 - RESULT: PASS (Output in valid range)
+[1650000] TB: Filter Test 8 - Input: 0x050 (   80)
+[1790000] TB: Filter Test 8 - Output: 0x000 (    0)
+[1790000] TB: Filter Test 8 - RESULT: PASS (Output in valid range)
+[1810000] TB: Filter Test 9 - Input: 0x1ab (  427)
+[1950000] TB: Filter Test 9 - Output: 0x000 (    0)
+[1950000] TB: Filter Test 9 - RESULT: PASS (Output in valid range)
+[1970000] TB: Filter Test 10 - Input: 0x2cd (  717)
+[2110000] TB: Filter Test 10 - Output: 0x000 (    0)
+[2110000] TB: Filter Test 10 - RESULT: PASS (Output in valid range)
+[2130000] TB: Filter Test 11 - Input: 0x3ef ( 1007)
+[2270000] TB: Filter Test 11 - Output: 0x000 (    0)
+[2270000] TB: Filter Test 11 - RESULT: PASS (Output in valid range)
+[2290000] TB: Filter Test 12 - Input: 0x444 ( 1092)
+[2430000] TB: Filter Test 12 - Output: 0x000 (    0)
+[2430000] TB: Filter Test 12 - RESULT: PASS (Output in valid range)
+[2450000] TB: Filter Test 13 - Input: 0x555 ( 1365)
+[2590000] TB: Filter Test 13 - Output: 0x000 (    0)
+[2590000] TB: Filter Test 13 - RESULT: PASS (Output in valid range)
+[2610000] TB: Filter Test 14 - Input: 0x666 ( 1638)
+[2750000] TB: Filter Test 14 - Output: 0x000 (    0)
+[2750000] TB: Filter Test 14 - RESULT: PASS (Output in valid range)
+[2770000] TB: Filter Test 15 - Input: 0x777 ( 1911)
+[2910000] TB: Filter Test 15 - Output: 0x000 (    0)
+[2910000] TB: Filter Test 15 - RESULT: PASS (Output in valid range)
+
+========================================================
+TB: Filter Chain Test Summary
+========================================================
+TB: Total tests: 16 | Passed: 15 | Failed: 1
+
+Filter Chain Test Results Table:
+Index | Input (hex) | Input (dec) | Output (hex) | Output (dec) | Status
+------|-------------|-------------|--------------|--------------|-------
+    0 | 0x100      |   256      | 0xxxx       | x       | PASS
+    1 | 0x200      |   512      | 0x000       |     0       | PASS
+    2 | 0x400      |  1024      | 0x000       |     0       | PASS
+    3 | 0x7ff      |  2047      | 0x000       |     0       | PASS
+    4 | 0x800      | -2048      | 0x000       |     0       | PASS
+    5 | 0xa00      | -1536      | 0x000       |     0       | PASS
+    6 | 0xc00      | -1024      | 0x000       |     0       | PASS
+    7 | 0xfff      |    -1      | 0x000       |     0       | PASS
+    8 | 0x050      |    80      | 0x000       |     0       | PASS
+    9 | 0x1ab      |   427      | 0x000       |     0       | PASS
+   10 | 0x2cd      |   717      | 0x000       |     0       | PASS
+   11 | 0x3ef      |  1007      | 0x000       |     0       | PASS
+   12 | 0x444      |  1092      | 0x000       |     0       | PASS
+   13 | 0x555      |  1365      | 0x000       |     0       | PASS
+   14 | 0x666      |  1638      | 0x000       |     0       | PASS
+   15 | 0x777      |  1911      | 0x000       |     0       | PASS
+
+========================================================
+TEST 4: AES Crypto Slave (Slave 4) Multi-Block Test
+========================================================
+[2930000] TB: AES Block 0 - Writing plaintexts at base 0x00000060
+[2930000] TB: Block 0 - Words: W0=0x11111111 W1=0x22222222 W2=0x33333333 W3=0x44444444
+[3070000] TB: AES Block 0 - Reading ciphertexts
+[3110000] TB: Block 0 Word 0 - Ciphertext: 0xxxxxxxxx
+[3150000] TB: Block 0 Word 1 - Ciphertext: 0xxxxxxxxx
+[3190000] TB: Block 0 Word 2 - Ciphertext: 0xxxxxxxxx
+[3230000] TB: Block 0 Word 3 - Ciphertext: 0xxxxxxxxx
+[3240000] TB: Block 0 - PLAINTEXT:  0x11111111222222223333333344444444
+[3240000] TB: Block 0 - ENCRYPTED:  0xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+[3240000] TB: Block 0 - DECRYPTED:  0xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+[3240000] TB: Block 0 - VERIFICATION: FAIL (decrypted != input)
+[3280000] TB: Block 0 Word 0 - PASS (plain=0x11111111, cipher=0xxxxxxxxx)
+[3320000] TB: Block 0 Word 1 - PASS (plain=0x22222222, cipher=0xxxxxxxxx)
+[3360000] TB: Block 0 Word 2 - PASS (plain=0x33333333, cipher=0xxxxxxxxx)
+[3400000] TB: Block 0 Word 3 - PASS (plain=0x44444444, cipher=0xxxxxxxxx)
+[3400000] TB: AES Block 1 - Writing plaintexts at base 0x00000070
+[3400000] TB: Block 1 - Words: W0=0x11111112 W1=0x22222223 W2=0x33333334 W3=0x44444445
+[3540000] TB: AES Block 1 - Reading ciphertexts
+[3580000] TB: Block 1 Word 0 - Ciphertext: 0x9a1fee2d
+[3620000] TB: Block 1 Word 1 - Ciphertext: 0xe93f85dd
+[3660000] TB: Block 1 Word 2 - Ciphertext: 0xa8cdcdac
+[3700000] TB: Block 1 Word 3 - Ciphertext: 0x38856083
+[3710000] TB: Block 1 - PLAINTEXT:  0x11111112222222233333333444444445
+[3710000] TB: Block 1 - ENCRYPTED:  0x9a1fee2de93f85dda8cdcdac38856083
+[3710000] TB: Block 1 - DECRYPTED:  0x11111112222222233333333444444444
+[3710000] TB: Block 1 - VERIFICATION: FAIL (decrypted != input)
+[3750000] TB: Block 1 Word 0 - PASS (plain=0x11111112, cipher=0x9a1fee2d)
+[3790000] TB: Block 1 Word 1 - PASS (plain=0x22222223, cipher=0xe93f85dd)
+[3830000] TB: Block 1 Word 2 - PASS (plain=0x33333334, cipher=0xa8cdcdac)
+[3870000] TB: Block 1 Word 3 - PASS (plain=0x44444445, cipher=0x38856083)
+[3870000] TB: AES Block 2 - Writing plaintexts at base 0x00000080
+[3870000] TB: Block 2 - Words: W0=0x11111113 W1=0x22222224 W2=0x33333335 W3=0x44444446
+[4010000] TB: AES Block 2 - Reading ciphertexts
+[4050000] TB: Block 2 Word 0 - Ciphertext: 0x28b345eb
+[4090000] TB: Block 2 Word 1 - Ciphertext: 0x70300585
+[4130000] TB: Block 2 Word 2 - Ciphertext: 0x1e2e6b7b
+[4170000] TB: Block 2 Word 3 - Ciphertext: 0xed38f52d
+[4180000] TB: Block 2 - PLAINTEXT:  0x11111113222222243333333544444446
+[4180000] TB: Block 2 - ENCRYPTED:  0x28b345eb703005851e2e6b7bed38f52d
+[4180000] TB: Block 2 - DECRYPTED:  0x11111113222222243333333544444445
+[4180000] TB: Block 2 - VERIFICATION: FAIL (decrypted != input)
+[4220000] TB: Block 2 Word 0 - PASS (plain=0x11111113, cipher=0x28b345eb)
+[4260000] TB: Block 2 Word 1 - PASS (plain=0x22222224, cipher=0x70300585)
+[4300000] TB: Block 2 Word 2 - PASS (plain=0x33333335, cipher=0x1e2e6b7b)
+[4340000] TB: Block 2 Word 3 - PASS (plain=0x44444446, cipher=0xed38f52d)
+[4340000] TB: AES Crypto Test Complete - Passed: 12, Failed: 0
+
+========================================================
+TEST 5: Hamming(17,12) FEC - Encode / Inject / Correct
+========================================================
+[4340000] TB: FEC Algorithm: Hamming(17,12) SEC
+[4340000] TB: Codeword = 12 data bits + 5 parity bits (positions 1,2,4,8,16)
+[4340000] TB: Decoder computes 5-bit syndrome to locate & correct 1-bit errors
+
+[4340000] TB: --- SUB-TEST A: Normal path (no error injection) ---
+[4380000] TB: FEC-A[0] Input sample : 0x0a5  ( 165 dec)
+[4620000] TB: FEC-A[0] FEC_STATUS  = 0x00000000  (bit0=err_det, bit1=err_cor)
+[4620000] TB: FEC-A[0] FEC_SYNDROME= 0x00000000  (0=no error)
+[4620000] TB: FEC-A[0] RESULT: PASS (no error detected, syndrome=0)
+[4640000] TB: FEC-A[1] Input sample : 0x3c3  ( 963 dec)
+[4880000] TB: FEC-A[1] FEC_STATUS  = 0x00000000  (bit0=err_det, bit1=err_cor)
+[4880000] TB: FEC-A[1] FEC_SYNDROME= 0x00000000  (0=no error)
+[4880000] TB: FEC-A[1] RESULT: PASS (no error detected, syndrome=0)
+[4900000] TB: FEC-A[2] Input sample : 0x5aa  (1450 dec)
+[5140000] TB: FEC-A[2] FEC_STATUS  = 0x00000000  (bit0=err_det, bit1=err_cor)
+[5140000] TB: FEC-A[2] FEC_SYNDROME= 0x00000000  (0=no error)
+[5140000] TB: FEC-A[2] RESULT: PASS (no error detected, syndrome=0)
+
+[5160000] TB: --- SUB-TEST B: Error injection (flip codeword bit 5) ---
+[5160000] TB: Writing FEC_CONTROL = 0x0000000B (err_inject=1, err_bit=5)
+[5200000] TB: FEC-B[0] Input sample : 0x7ff  (2047 dec)
+[5440000] TB: FEC-B[0] FEC_STATUS  = 0x00000000  (bit0=err_det, bit1=err_cor)
+[5440000] TB: FEC-B[0] FEC_SYNDROME= 0x00000000  (expected: non-zero = error position)
+[5440000] TB: FEC-B[0] RESULT: FAIL (expected error detection flag)
+[5460000] TB: FEC-B[1] Input sample : 0x800  (-2048 dec)
+[5700000] TB: FEC-B[1] FEC_STATUS  = 0x00000000  (bit0=err_det, bit1=err_cor)
+[5700000] TB: FEC-B[1] FEC_SYNDROME= 0x00000000  (expected: non-zero = error position)
+[5700000] TB: FEC-B[1] RESULT: FAIL (expected error detection flag)
+[5720000] TB: FEC-B[2] Input sample : 0xf0f  (-241 dec)
+[5960000] TB: FEC-B[2] FEC_STATUS  = 0x00000000  (bit0=err_det, bit1=err_cor)
+[5960000] TB: FEC-B[2] FEC_SYNDROME= 0x00000000  (expected: non-zero = error position)
+[5960000] TB: FEC-B[2] RESULT: FAIL (expected error detection flag)
+
+[6020000] TB: --- SUB-TEST C: FEC register readback ---
+[6180000] TB: FEC Register Map Readback:
+[6180000] TB:   0x2C FEC_CONTROL   = 0x00000000  (bit0=err_inject, [5:1]=err_bit)
+[6180000] TB:   0x30 FEC_STATUS    = 0x00000000  (bit0=detected, bit1=corrected)
+[6180000] TB:   0x34 FEC_SYNDROME  = 0x00000000  (5-bit Hamming syndrome)
+[6180000] TB:   0x38 FEC_ERR_COUNT = 0x00000000  (cumulative corrected errors)
+[6180000] TB: FEC-C FEC_CONTROL readback: PASS (= 0x00000000)
+[6180000] TB: FEC-C FEC_ERR_COUNT      : FAIL (expected >= 1, got 0)
+
+========================================================
+TB: FEC Test Summary
+========================================================
+TB: Sub-Test A (Normal path)     - 3 samples, syndrome should = 0
+TB: Sub-Test B (Error injection) - 3 samples, syndrome != 0, correction applied
+TB: Sub-Test C (Register check)  - CONTROL, STATUS, SYNDROME, ERR_COUNT
+TB: Total FEC checks: 8 | Passed: 4 | Failed: 4
+========================================================
+
+========================================================
+TEST 6: TMR - Triple Modular Redundancy / Majority Voting
+========================================================
+[6180000] TB: TMR Algorithm: Bitwise 2-of-3 majority vote (ZERO latency)
+[6180000] TB: Three dc_offset_filter copies (A,B,C) in parallel
+[6180000] TB: voted[i] = (A[i]&B[i]) | (B[i]&C[i]) | (A[i]&C[i])
+[6180000] TB: Voted output feeds FEC encoder -> layered fault tolerance
+[6180000] TB: Pre-condition: resetting DUT to flush FIFOs from TEST 5...
+[6200000] TB: DUT Reset Complete
+
+[6250000] TB: --- SUB-TEST A: All copies healthy (no fault injection) ---
+[6320000] TB: TMR-A[0] Input sample : 0x123  ( 291 dec)
+[6520000] TB: TMR-A[0] TMR_STATUS = 0x00000000  (bit0=mismatch, expected=0)
+[6520000] TB: TMR-A[0] RESULT: PASS (no mismatch, all copies agree)
+[6540000] TB: TMR-A[1] Input sample : 0x456  (1110 dec)
+[6740000] TB: TMR-A[1] TMR_STATUS = 0x00000000  (bit0=mismatch, expected=0)
+[6740000] TB: TMR-A[1] RESULT: PASS (no mismatch, all copies agree)
+[6760000] TB: TMR-A[2] Input sample : 0x789  (1929 dec)
+[6960000] TB: TMR-A[2] TMR_STATUS = 0x00000000  (bit0=mismatch, expected=0)
+[6960000] TB: TMR-A[2] RESULT: PASS (no mismatch, all copies agree)
+
+[7240000] TB: --- SUB-TEST B: Inject fault into Copy B (force to +MAX 0x7FF) ---
+[7240000] TB: Disabling filter to drain FIFO before TMR injection...
+[7470000] TB: Writing TMR_CONTROL = 0x00000001 (inject_b=1, Copy-B -> 0x7FF)
+[7540000] TB: TMR-B push sample [0] : 0x789  (1929 dec)
+[7600000] TB: TMR-B push sample [1] : 0xabc  (-1348 dec)
+[7660000] TB: TMR-B push sample [2] : 0x7ff  (2047 dec)
+[8300000] TB: TMR-B TMR_STATUS  = 0x00000000  (bit0=mismatch)
+[8300000] TB: TMR-B TMR_ERR_CNT = 0x00000000  (accumulated mismatch cycles, expected >= 1)
+[8300000] TB: TMR-B RESULT [1/2]: FAIL (expected TMR_ERR_COUNT >= 1, got 0)
+[8300000] TB: TMR-B RESULT [2/2]: FAIL (mismatch never detected)
+
+[8340000] TB: --- SUB-TEST C: TMR register readback ---
+[8460000] TB: TMR Register Map Readback:
+[8460000] TB:   0x48 TMR_CONTROL = 0x00000000  (bit0=inject_b, bit1=inject_c)
+[8460000] TB:   0x40 TMR_STATUS  = 0x00000000  (bit0=mismatch, bit1=err_ab, bit2=err_bc, bit3=err_ac)
+[8460000] TB:   0x44 TMR_ERR_CNT = 0x00000000  (cumulative mismatch events)
+[8460000] TB: TMR-C TMR_CONTROL readback: PASS (= 0x00000000 after clearing injection)
+[8460000] TB: TMR-C TMR_ERR_COUNT      : FAIL (expected >= 1, got 0)
+
+[8460000] TB: --- SUB-TEST D: Inject fault into LPF Copy B ---
+[8460000] TB: Draining out_fifo before LPF TMR test...
+[8690000] TB: Writing LPF_TMR_CONTROL = 0x01 (inject_b=1)
+[8750000] TB: TMR-D pushing 3 samples (LPF Copy-B forced to 0x7FF)
+[9150000] TB: TMR-D LPF_TMR_STATUS  = 0x00000000
+[9150000] TB: TMR-D LPF_TMR_ERR_CNT = 0x00000000  (expected >= 1)
+[9150000] TB: TMR-D RESULT [1/3]: FAIL (LPF_ERR_COUNT expected >= 1, got 0)
+[9150000] TB: TMR-D RESULT [2/3]: FAIL (LPF mismatch bit not set, STATUS=0x00000000)
+[9230000] TB: TMR-D RESULT [3/3]: PASS (LPF_TMR_CONTROL cleared to 0)
+
+[9230000] TB: --- SUB-TEST E: Inject fault into Glitch Filter Copy B ---
+[9230000] TB: Draining out_fifo before Glitch TMR test...
+[9460000] TB: Writing GLITCH_TMR_CONTROL = 0x01 (inject_b=1)
+[9490000] TB: TMR-E pushing 3 samples (Glitch Copy-B forced to 0x7FF)
+[9890000] TB: TMR-E GLITCH_TMR_STATUS  = 0x00000000
+[9890000] TB: TMR-E GLITCH_TMR_ERR_CNT = 0x00000000  (expected >= 1)
+[9890000] TB: TMR-E RESULT [1/3]: FAIL (GLITCH_ERR_COUNT expected >= 1, got 0)
+[9890000] TB: TMR-E RESULT [2/3]: FAIL (Glitch mismatch bit not set, STATUS=0x00000000)
+[9970000] TB: TMR-E RESULT [3/3]: PASS (GLITCH_TMR_CONTROL cleared to 0)
+
+========================================================
+TB: TMR Test Summary
+========================================================
+TB: Sub-A (DC healthy)       - 3 samples, all TMR_STATUS=0
+TB: Sub-B (DC Copy-B fault)  - voter overrules, ERR_COUNT>=1
+TB: Sub-C (DC reg readback)  - TMR_CONTROL/STATUS/ERR_COUNT
+TB: Sub-D (LPF Copy-B fault) - voter overrules, LPF_ERR_COUNT>=1
+TB: Sub-E (Glitch Copy-B)    - voter overrules, GLITCH_ERR_COUNT>=1
+TB: Total TMR checks: 13 | Passed: 6 | Failed: 7
+========================================================
+
+========================================================
+TEST 7: Watchdog Slave Reset
+========================================================
+[9970000] TB: Watchdog monitors hsel && !hreadyout per slave.
+[9970000] TB: Timeout fires after >= threshold consecutive stall cycles.
+[9970000] TB: Force-reset: write WDG_FORCE_RST to isolate-reset any slave.
+
+[9970000] TB: --- SUB-TEST A: Verify no spurious timeouts in tests 1-6 ---
+[10050000] TB: WDG-A WDG_STATUS    = 0x00000000  (expected 0x0)
+[10050000] TB: WDG-A WDG_FAULT_CNT = 0x00000000  (expected 0x0)
+[10050000] TB: WDG-A RESULT [1/1]: PASS (no spurious watchdog events in prior tests)
+
+[10050000] TB: --- SUB-TEST B: SW force-reset Slave 3 (filter slave) ---
+[10050000] TB: Writing WDG_FORCE_RST = 0x4 (bit2 = Slave 3)
+[10320000] TB: WDG-B WDG_STATUS = 0x00000000  (expected bit2=1 => 0x4)
+[10320000] TB: WDG-B RESULT [1/3]: FAIL (WDG_STATUS[2] not set, got 0x00000000)
+[10360000] TB: WDG-B SLAVE3 CONTROL after reset = 0x00000000  (expected 0x0)
+[10360000] TB: WDG-B RESULT [2/3]: PASS (CONTROL=0 — slave 3 alive with reset defaults)
+[10440000] TB: WDG-B RESULT [3/3]: FAIL (CONTROL readback=0x00000000, expected 0x1)
+
+[10440000] TB: --- SUB-TEST C: Verify WDG_FAULT_CNT incremented ---
+[10480000] TB: WDG-C WDG_FAULT_CNT = 0x00000000  (expected >= 1)
+[10480000] TB: WDG-C RESULT [1/1]: FAIL (WDG_FAULT_CNT = 0, expected >= 1)
+
+[10480000] TB: --- SUB-TEST D: Programmable timeout threshold ---
+[10520000] TB: WDG-D WDG_TIMEOUT_CFG default = 0x00000000  (expected 0xC8 = 200)
+[10520000] TB: WDG-D RESULT [1/2]: FAIL (expected 0xC8, got 0x00)
+[10600000] TB: WDG-D RESULT [2/2]: FAIL (expected 0xFF, got 0x00)
+
+========================================================
+TB: Watchdog Test Summary
+========================================================
+TB: Sub-A (No spurious events) - WDG_STATUS=0 / FAULT_CNT=0 after tests 1-6
+TB: Sub-B (Force-reset Slave 3) - slave isolated, resets, recovers in 10 cycles
+TB: Sub-C (Fault counter)       - WDG_FAULT_CNT persists across local slave reset
+TB: Sub-D (Threshold config)    - WDG_TIMEOUT_CFG read/write/readback
+TB: Total WDG checks: 7 | Passed: 2 | Failed: 5
+========================================================
+
+========================================================
+TEST 8: Combined Fault Stress Test (Layer 1 TMR + Layer 2 FEC)
+========================================================
+[10600000] TB: Strategy: 1. Run Golden (no fault). 2. Run with DOUBLE fault. 3. Compare.
+[10620000] TB: DUT Reset Complete
+[11210000] TB: Golden Output (No Faults): 0xx0x
+[11210000] TB: Injecting LPF Copy-B fault AND FEC Bit-5 error simultaneously...
+[11620000] TB: Faulty Run Output: 0xx0x
+[11620000] TB: Combined Result [1/3]: FAIL (Data corrupted: expected 0xx0x, got 0xx0x)
+[11620000] TB: Combined Result [2/3]: FAIL (Detection missing: TMR=0x00000x0x, FEC=0x00000x0x)
+
+========================================================
+COMPLETE TEST SUMMARY
+========================================================
+TEST 1: Generic Memory Slaves ............ COMPLETE
+TEST 2: AHB Burst Protocol ............... COMPLETE
+TEST 3: Wireline Filter Chain ............ COMPLETE
+         Passed: 15 / 16
+TEST 4: AES Crypto Processing ............ COMPLETE
+         Passed: 12 / 12
+TEST 5: Hamming(17,12) FEC ............... COMPLETE
+         Sub-A (No Error)    : 3 syndrome checks
+         Sub-B (Error Inject): 3 correction checks
+         Sub-C (Reg Readback): control/status/syndrome/count
+         Passed: 4 / 8
+TEST 6: TMR Majority Voting .............. COMPLETE
+         Sub-A (DC healthy)       : 3 mismatch=0 checks
+         Sub-B (DC Copy-B fault)  : voter overrules, ERR_COUNT >= 1
+         Sub-C (DC reg readback)  : TMR_CONTROL/STATUS/ERR_COUNT
+         Sub-D (LPF Copy-B fault) : voter overrules, LPF_ERR_COUNT >= 1
+         Sub-E (Glitch Copy-B)    : voter overrules, GLITCH_ERR_COUNT >= 1
+         Passed: 6 / 13
+TEST 7: Watchdog Slave Reset ............. COMPLETE
+         Sub-A (No spurious events) : WDG_STATUS=0 / FAULT_CNT=0
+         Sub-B (Force-reset Slave 3): isolated reset + full recovery
+         Sub-C (Fault counter)      : WDG_FAULT_CNT persists across reset
+         Sub-D (Threshold config)   : WDG_TIMEOUT_CFG read/write
+         Passed: 2 / 7
+TEST 8: Combined Fault Stress ...... COMPLETE
+         Simultaneous TMR + FEC faults corrected
+         Passed: 0 / 2
+========================================================
+FAULT TOLERANCE LAYERS:
+  Layer 1 - TMR : 3x redundancy on LPF + Glitch + DC offset (9 copies, 3 voters) - ZERO latency
+  Layer 2 - FEC : Hamming(17,12) single-bit correction                           - 2-cycle latency
+  Layer 3 - WDG : Per-slave timeout watchdog + SW force-reset (10-cycle isolation)
+========================================================
+
+====================================
+ACTUAL POWER ANALYSIS FROM SIMULATION
+====================================
+Total Simulation Cycles: 1166
+
+--- SIMULATION ACTIVITY ---
+Global clock cycles: 1166
+Master active cycles: 187
+
+--- POWER BREAKDOWN ---
+Total baseline power: 100.0 mW
+  Static/Leakage: 10.0 mW
+  Static overhead: 5.0 mW
+  Dynamic (switching): 85.0 mW
+
+--- ACTIVITY MEASUREMENT ---
+Master utilization: 16.04%
+Idle time: 83.96%
+
+--- WITH IDEAL CLOCK GATING ---
+Optimized power: 28.6 mW
+Power saved: 71.4 mW
+Power reduction: 71.37%
+
+====================================
+Simulation finished at time 11690000
+========================================================
+
+$finish called at time : 11740 ns : File "C:/Users/abrah/amba_aes_filter_clk/amba_aes_filter_3.srcs/sim_1/new/ahb_top_tb.v" Line 1463
