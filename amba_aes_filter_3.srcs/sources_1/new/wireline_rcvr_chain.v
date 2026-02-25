@@ -111,7 +111,7 @@ module wireline_rcvr_chain #(
     //==================================================================
     glitch_filter #(
         .DATA_WIDTH(DATA_WIDTH),
-        .STABLE_CNT(3)         // stable cycles before accepting new value
+        .THRESHOLD(512)        // spike rejection threshold
     ) glitch_stage (
         .clk(clk),
         .rst(rst),

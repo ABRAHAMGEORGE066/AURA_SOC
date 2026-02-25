@@ -16,6 +16,7 @@ module lpf_fir #(
     always @(posedge clk) begin
         if (rst) begin
             x0 <= 0; x1 <= 0; x2 <= 0; x3 <= 0; x4 <= 0;
+            acc  <= 0;
             dout <= 0;
         end else if (enable) begin
             // Shift samples

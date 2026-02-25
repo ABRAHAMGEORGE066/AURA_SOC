@@ -33,7 +33,7 @@ module ahb_watchdog(
     
     always @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
-            slv_rst_n <= 4'b1111;
+            slv_rst_n <= 4'b0000;   // propagate global reset to all slaves
             timeout_flags <= 4'b0000;
             total_timeouts <= 32'd0;
             for (i = 0; i < 4; i = i + 1) begin
@@ -65,11 +65,10 @@ module ahb_watchdog(
                     // Only trigger if not already resetting
                     if (reset_counters[i] == 0) begin
                         reset_counters[i] <= RST_PULSE_WIDTH;
-                        // If it was a timeout (not just force), set flag and increment total
-                        if (force_reset[i] == 0) begin
-                            timeout_flags[i] <= 1'b1;
-                            total_timeouts <= total_timeouts + 1;
-                        end
+                        // Set sticky status flag and increment counter for BOTH
+                        // hardware timeouts AND SW force-resets
+                        timeout_flags[i] <= 1'b1;
+                        total_timeouts <= total_timeouts + 1;
                     end
                     counters[i] <= 32'd0; // Reset counter
                 end

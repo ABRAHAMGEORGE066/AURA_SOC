@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Simulation outputs
+*.vcd
+sim_out/
+
+# Vivado / XSIM build artifacts
+*.jou
+*.log
+*.pb
+*.str
+*.wdb
+*.xpr.bak
+amba_aes_filter_3.hw/
+amba_aes_filter_3.ip_user_files/
+amba_aes_filter_3.sim/
+amba_aes_filter_3.cache/
+amba_aes_filter_3.runs/
+.Xil/
+
+# Compiled simulation binaries
+*.out
+*.o
+
+# Vivado project backup files
+*.bak

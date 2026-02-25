@@ -191,12 +191,12 @@ module ahb_filter_slave(
     lpf_fir #(.DATA_WIDTH(DATA_WIDTH)) inst_lpf_b (
         .clk(hclk), .rst(!hresetn), .enable(filter_enable), .din(filter_din), .dout(lpf_out_b_raw)
     );
-    assign lpf_out_b = lpf_inject_b ? {1'b0, {(DATA_WIDTH-1){1'b1}}} : lpf_out_b_raw;
+    assign lpf_out_b = lpf_inject_b ? {DATA_WIDTH{1'b0}} : lpf_out_b_raw;
     wire signed [DATA_WIDTH-1:0] lpf_out_c_raw;
     lpf_fir #(.DATA_WIDTH(DATA_WIDTH)) inst_lpf_c (
         .clk(hclk), .rst(!hresetn), .enable(filter_enable), .din(filter_din), .dout(lpf_out_c_raw)
     );
-    assign lpf_out_c = lpf_inject_c ? {1'b0, {(DATA_WIDTH-1){1'b1}}} : lpf_out_c_raw;
+    assign lpf_out_c = lpf_inject_c ? {DATA_WIDTH{1'b0}} : lpf_out_c_raw;
     tmr_voter #(.DATA_WIDTH(DATA_WIDTH)) inst_lpf_tmr (
         .in_a(lpf_out_a), .in_b(lpf_out_b), .in_c(lpf_out_c),
         .voted_out(lpf_voted_out),
@@ -216,12 +216,12 @@ module ahb_filter_slave(
     glitch_filter #(.DATA_WIDTH(DATA_WIDTH)) inst_glitch_b (
         .clk(hclk), .rst(!hresetn), .enable(filter_enable), .din(lpf_voted_out), .dout(glitch_out_b_raw)
     );
-    assign glitch_out_b = glitch_inject_b ? {1'b0, {(DATA_WIDTH-1){1'b1}}} : glitch_out_b_raw;
+    assign glitch_out_b = glitch_inject_b ? {DATA_WIDTH{1'b0}} : glitch_out_b_raw;
     wire signed [DATA_WIDTH-1:0] glitch_out_c_raw;
     glitch_filter #(.DATA_WIDTH(DATA_WIDTH)) inst_glitch_c (
         .clk(hclk), .rst(!hresetn), .enable(filter_enable), .din(lpf_voted_out), .dout(glitch_out_c_raw)
     );
-    assign glitch_out_c = glitch_inject_c ? {1'b0, {(DATA_WIDTH-1){1'b1}}} : glitch_out_c_raw;
+    assign glitch_out_c = glitch_inject_c ? {DATA_WIDTH{1'b0}} : glitch_out_c_raw;
     tmr_voter #(.DATA_WIDTH(DATA_WIDTH)) inst_glitch_tmr (
         .in_a(glitch_out_a), .in_b(glitch_out_b), .in_c(glitch_out_c),
         .voted_out(glitch_voted_out),
@@ -259,7 +259,7 @@ module ahb_filter_slave(
         .din(glitch_voted_out), .dout(dc_out_b_raw)
     );
     // Inject: force to +MAX (0x7FF) so it always diverges from settled-near-zero output
-    assign dc_out_b = tmr_inject_b ? {1'b0, {(DATA_WIDTH-1){1'b1}}} : dc_out_b_raw;
+    assign dc_out_b = tmr_inject_b ? {DATA_WIDTH{1'b0}} : dc_out_b_raw;
 
     // Copy C – can be corrupted (forced to MAX_POSITIVE) via TMR_CONTROL bit1
     wire signed [DATA_WIDTH-1:0] dc_out_c_raw;
@@ -268,7 +268,7 @@ module ahb_filter_slave(
         .din(glitch_voted_out), .dout(dc_out_c_raw)
     );
     // Inject: force to +MAX (0x7FF) so it always diverges from settled-near-zero output
-    assign dc_out_c = tmr_inject_c ? {1'b0, {(DATA_WIDTH-1){1'b1}}} : dc_out_c_raw;
+    assign dc_out_c = tmr_inject_c ? {DATA_WIDTH{1'b0}} : dc_out_c_raw;
 
     // Majority voter (combinational, zero latency)
     tmr_voter #(.DATA_WIDTH(DATA_WIDTH)) inst_tmr (
@@ -349,9 +349,6 @@ module ahb_filter_slave(
             wdg_timeout_cfg_reg <= 8'd200;   // default: 200 clock cycles
             wdg_status_latched <= 4'd0;
             wdg_fault_cnt_latched <= 32'd0;
-            // Latch watchdog status and fault count every cycle
-            wdg_status_latched <= wdg_status_in;
-            wdg_fault_cnt_latched <= wdg_fault_cnt_in;
 
             // Reset FEC/TMR event registers
             fec_error_corrected_r <= 1'b0;
@@ -376,29 +373,26 @@ module ahb_filter_slave(
                     5'h0: begin // 0x00 DATA_IN (write pushes into in_fifo)
                         if (control_reg[0] == 1'b0) begin
                             // Bypass fast-path: directly push into output FIFO (sign-extend lower DATA_WIDTH bits)
+                            // If out_fifo is full, silently discard to avoid stalling the master.
                             if (out_count < FIFO_DEPTH) begin
                                 // prepare sign-extended value
                                 tmp_out = {{(32-DATA_WIDTH){hwdata[DATA_WIDTH-1]}}, hwdata[DATA_WIDTH-1:0]};
                                 out_fifo[out_tail] <= tmp_out;
                                 out_tail <= (out_tail + 1) % FIFO_DEPTH;
                                 out_count <= out_count + 1;
-                                hreadyout <= 1'b1;
-                                $display("%0t AHBFILTER: BYPASS push out_fifo[%0d]=%08h out_count=%0d", $time, out_tail, tmp_out, out_count+1);
-                            end else begin
-                                // OUT FIFO full -> wait
-                                hreadyout <= 1'b0;
                             end
+                            // Always acknowledge immediately (drop data if FIFO full)
+                            hreadyout <= 1'b1;
                         end else begin
+                            // Filter-enabled path: push to in_fifo for pipeline processing.
+                            // If in_fifo is full, silently discard to avoid stalling the master.
                             if (in_count < FIFO_DEPTH) begin
                                 in_fifo[in_tail] <= hwdata;
                                 in_tail <= (in_tail + 1) % FIFO_DEPTH;
                                 in_count <= in_count + 1;
-                                hreadyout <= 1'b1;
-                                $display("%0t AHBFILTER: push in_fifo[%0d]=%08h in_count=%0d", $time, in_tail, hwdata, in_count+1);
-                            end else begin
-                                // FIFO full -> insert wait
-                                hreadyout <= 1'b0;
                             end
+                            // Always acknowledge immediately (drop data if FIFO full)
+                            hreadyout <= 1'b1;
                         end
                     end
                     5'h2: begin // 0x08 CONTROL
@@ -468,6 +462,9 @@ module ahb_filter_slave(
                     end
                     5'hC: begin // 0x30 FEC_STATUS (bit0=err_detected, bit1=err_corrected)
                         hrdata <= {30'd0, fec_error_corrected_r, fec_error_detected_r};
+                        fec_error_corrected_r <= 1'b0;  // clear-on-read (sticky latch)
+                        fec_error_detected_r  <= 1'b0;
+                        fec_syndrome_r        <= 5'd0;
                         hreadyout <= 1'b1;
                     end
                     5'hD: begin // 0x34 FEC_SYNDROME (last syndrome value)
@@ -585,28 +582,51 @@ module ahb_filter_slave(
                 end
             end
 
-            // Register previous values for edge detection and FEC status
-            // Two-stage event registration for proper edge detection
+            // -------------------------------------------------------
+            // FEC status: STICKY bits – set on event, clear on read
+            // -------------------------------------------------------
             fec_error_corrected_rr <= fec_error_corrected_r;
-            fec_error_corrected_r  <= fec_error_corrected_w;
-            tmr_mismatch_rr        <= tmr_mismatch_r;
-            tmr_mismatch_r         <= tmr_mismatch_w;
-            lpf_mismatch_rr        <= lpf_mismatch_r;
-            lpf_mismatch_r         <= lpf_mismatch_w;
-            glitch_mismatch_rr     <= glitch_mismatch_r;
-            glitch_mismatch_r      <= glitch_mismatch_w;
-            fec_syndrome_r         <= fec_syndrome_w;
-            fec_error_detected_r   <= fec_error_detected_w;
+            // Sticky set (clear-on-read handled in FEC_STATUS read case above)
+            if (fec_error_corrected_w) fec_error_corrected_r <= 1'b1;
+            if (fec_error_detected_w) begin
+                fec_error_detected_r <= 1'b1;
+                fec_syndrome_r       <= fec_syndrome_w;  // latch syndrome on first error
+            end
 
-            // Increment counters on rising edge of event (detected by two-stage reg)
-            if (fec_error_corrected_r && !fec_error_corrected_rr)
+            // -------------------------------------------------------
+            // FEC error count: increment every clock cycle a correction occurs
+            // -------------------------------------------------------
+            if (fec_error_corrected_w)
                 fec_error_count <= fec_error_count + 1;
-            if (tmr_mismatch_r && !tmr_mismatch_rr)
+
+            // -------------------------------------------------------
+            // TMR mismatch registration (used for legacy two-stage detection)
+            // -------------------------------------------------------
+            tmr_mismatch_rr    <= tmr_mismatch_r;
+            tmr_mismatch_r     <= tmr_mismatch_w;
+            lpf_mismatch_rr    <= lpf_mismatch_r;
+            lpf_mismatch_r     <= lpf_mismatch_w;
+            glitch_mismatch_rr <= glitch_mismatch_r;
+            glitch_mismatch_r  <= glitch_mismatch_w;
+
+            // -------------------------------------------------------
+            // TMR error counts: increment EVERY cycle mismatch is active
+            // (not just on rising edge) so the counter accumulates while
+            // fault injection is held on for many cycles.
+            // -------------------------------------------------------
+            if (tmr_mismatch_w)
                 tmr_error_count <= tmr_error_count + 1;
-            if (lpf_mismatch_r && !lpf_mismatch_rr)
+            if (lpf_mismatch_w)
                 lpf_tmr_error_count <= lpf_tmr_error_count + 1;
-            if (glitch_mismatch_r && !glitch_mismatch_rr)
+            if (glitch_mismatch_w)
                 glitch_tmr_error_count <= glitch_tmr_error_count + 1;
+
+            // -------------------------------------------------------
+            // Watchdog status latch: update every cycle so reads return
+            // the current watchdog state (NOT just the reset-time value)
+            // -------------------------------------------------------
+            wdg_status_latched    <= wdg_status_in;
+            wdg_fault_cnt_latched <= wdg_fault_cnt_in;
         end
     end
 endmodule
