@@ -41,12 +41,18 @@ module ahb_filter_slave(
 
     // Event signal registers for edge detection
     // Event signal registers for edge detection (two-stage for proper edge detection)
-    reg fec_error_corrected_r, fec_error_corrected_rr;
+    // reg fec_error_corrected_r, fec_error_corrected_rr; // removed duplicate
     reg tmr_mismatch_r, tmr_mismatch_rr;
     reg lpf_mismatch_r, lpf_mismatch_rr;
     reg glitch_mismatch_r, glitch_mismatch_rr;
-    reg [4:0] fec_syndrome_r;
-    reg fec_error_detected_r;
+    // reg [4:0] fec_syndrome_r; // removed duplicate
+    // reg fec_error_detected_r; // removed duplicate
+    // TMR inject signals for DC offset filter
+    wire tmr_inject_b = tmr_control_reg[0];
+    wire tmr_inject_c = tmr_control_reg[1];
+    // Temporary variables for FIFO operations
+    reg [31:0] tmp_out;
+    reg [31:0] tmp_cap;
 
     // Register map (word offsets, byte-addressable via haddr):
     // 0x00 - DATA_IN   (write only)  : push 32-bit sample to input FIFO
@@ -76,7 +82,10 @@ module ahb_filter_slave(
     parameter DATA_WIDTH = 12;
     parameter FIFO_DEPTH = 8; // entries
     parameter TAP_NUM = 7;    // fir_equalizer TAP_NUM
+
     localparam PIPELINE_LAT = 6; // filter(3 cyc) + TMR(0 cyc, combinational) + FEC enc+dec(2 cyc) + 1 margin
+    // FEC codeword width (must be constant for synthesis)
+    localparam FEC_CW_WIDTH = 17; // Set to match your FEC encoder/decoder
 
     // Simple AHB single-beat handling (similar to ahb_slave)
     parameter T_IDLE = 2'b00, T_NONSEQ = 2'b10, T_SEQ = 2'b11;
@@ -97,112 +106,79 @@ module ahb_filter_slave(
     // FIR coefficients storage
     reg signed [DATA_WIDTH-1:0] coeffs [0:TAP_NUM-1];
 
+
     // Local signals for streaming the pipeline
     reg streaming; // when 1 we are feeding samples to filters each cycle
     reg [3:0] samples_to_feed; // remaining samples to feed in current streaming op
 
-    // Instantiate filter chain: LPF(x3/TMR) -> Glitch(x3/TMR) -> DC(x3/TMR) -> FEC
-    // Every filter stage is triplicated; majority voters add ZERO pipeline latency.
-
-    // LPF TMR wires
-    wire signed [DATA_WIDTH-1:0] lpf_out_a, lpf_out_b, lpf_out_c;
-    wire signed [DATA_WIDTH-1:0] lpf_voted_out;
-    wire                         lpf_mismatch_w, lpf_err_ab_w, lpf_err_bc_w, lpf_err_ac_w;
-    wire        [DATA_WIDTH-1:0] lpf_error_mask_w;
-
-    // Glitch TMR wires
+    // TMR and filter chain intermediate signals
+    wire signed [DATA_WIDTH-1:0] lpf_voted_out, glitch_voted_out;
     wire signed [DATA_WIDTH-1:0] glitch_out_a, glitch_out_b, glitch_out_c;
-    wire signed [DATA_WIDTH-1:0] glitch_voted_out;
-    wire                         glitch_mismatch_w, glitch_err_ab_w, glitch_err_bc_w, glitch_err_ac_w;
-    wire        [DATA_WIDTH-1:0] glitch_error_mask_w;
-
-    // DC TMR wires
     wire signed [DATA_WIDTH-1:0] dc_out_a, dc_out_b, dc_out_c;
-    wire signed [DATA_WIDTH-1:0] tmr_voted_out;
-    wire                         tmr_mismatch_w;
-    wire                         tmr_err_ab_w, tmr_err_bc_w, tmr_err_ac_w;
-    wire        [DATA_WIDTH-1:0] tmr_error_mask_w;
-    wire signed [DATA_WIDTH-1:0] feed_sample;
 
-    // Simple converter from 32-bit input to DATA_WIDTH signed sample
-    // Convention: use lower DATA_WIDTH bits as signed two's complement
-    function signed [DATA_WIDTH-1:0] to_sample(input [31:0] w);
-        begin
-            to_sample = $signed(w[DATA_WIDTH-1:0]);
-        end
-    endfunction
+    // TMR status/error wires
+    wire tmr_mismatch_w, tmr_err_ab_w, tmr_err_bc_w, tmr_err_ac_w, tmr_error_mask_w;
+    wire lpf_mismatch_w, lpf_err_ab_w, lpf_err_bc_w, lpf_err_ac_w, lpf_error_mask_w;
+    wire glitch_mismatch_w, glitch_err_ab_w, glitch_err_bc_w, glitch_err_ac_w, glitch_error_mask_w;
 
-    // Feeding register (drives the filter chain din)
-    reg signed [DATA_WIDTH-1:0] filter_din;
-    reg [31:0] tmp_out;
-    reg [31:0] tmp_cap;
+    // TMR control and error counters
+    reg [31:0] tmr_control_reg, tmr_error_count;
+    reg [31:0] lpf_tmr_error_count, glitch_tmr_error_count;
 
-    // FEC control and status registers
-    reg  [31:0] fec_control_reg;              // bit0=err_inject_en, bits[5:1]=err_bit
-    wire        fec_err_inject = fec_control_reg[0];
-    wire [4:0]  fec_err_bit    = fec_control_reg[5:1];
-    reg  [31:0] fec_error_count;              // cumulative corrected error counter
+    // FEC control/status
+    reg [31:0] fec_control_reg;
+    reg [31:0] fec_error_count;
+    wire fec_err_inject = fec_control_reg[0];
+    wire [4:0] fec_err_bit = fec_control_reg[5:1];
+    wire fec_error_corrected_w, fec_error_detected_w;
+    wire [4:0] fec_syndrome_w;
+    wire signed [DATA_WIDTH-1:0] fec_dout;
 
-    // TMR control and status registers
-    reg  [31:0] tmr_control_reg;  // bit0 = tmr_inject_b (force copy-B to +MAX for testing)
-                                  // bit1 = tmr_inject_c (force copy-C to +MAX for testing)
-    wire        tmr_inject_b = tmr_control_reg[0]; // test: corrupt copy B (forces to 12'h7FF)
-    wire        tmr_inject_c = tmr_control_reg[1]; // test: corrupt copy C (forces to 12'h7FF)
-    reg  [31:0] tmr_error_count;  // cumulative DC TMR mismatch event counter
+    // Watchdog
+    reg [3:0] wdg_force_rst_reg, wdg_status_latched;
+    reg [7:0] wdg_timeout_cfg_reg;
+    reg [31:0] wdg_fault_cnt_latched;
 
-    // LPF TMR control and status registers (addresses 0x58 / 0x54 / 0x50)
-    reg  [31:0] lpf_tmr_control_reg;
-    wire        lpf_inject_b = lpf_tmr_control_reg[0];
-    wire        lpf_inject_c = lpf_tmr_control_reg[1];
-    reg  [31:0] lpf_tmr_error_count;
+    // Sticky event latches
+    reg fec_error_corrected_r, fec_error_corrected_rr;
+    reg fec_error_detected_r;
+    reg [4:0] fec_syndrome_r;
+    reg lpf_mismatch_r, lpf_mismatch_rr;
+    reg glitch_mismatch_r, glitch_mismatch_rr;
 
-    // Glitch TMR control and status registers (addresses 0x68 / 0x64 / 0x60)
-    reg  [31:0] glitch_tmr_control_reg;
-    wire        glitch_inject_b = glitch_tmr_control_reg[0];
-    wire        glitch_inject_c = glitch_tmr_control_reg[1];
-    reg  [31:0] glitch_tmr_error_count;
 
-    // Watchdog interface registers (0x70 - 0x7C)
-    reg  [3:0]  wdg_force_rst_reg;    // SW force-reset trigger (bit N = slave N+1)
-    reg  [7:0]  wdg_timeout_cfg_reg;  // SW timeout threshold (0=disabled, default=200 cycles)
-    reg  [3:0]  wdg_status_latched;
-    reg  [31:0] wdg_fault_cnt_latched;
-    assign wdg_force_rst_out   = wdg_force_rst_reg;
-    assign wdg_timeout_cfg_out = wdg_timeout_cfg_reg;
 
-    // FEC pipeline wires  (Hamming(17,12))
-    localparam FEC_CW_WIDTH = 17;
-    wire [FEC_CW_WIDTH-1:0] fec_encoded_cw;  // encoder output
-    wire [FEC_CW_WIDTH-1:0] fec_channel_cw;  // codeword after optional error injection
-    wire signed [DATA_WIDTH-1:0] fec_dout;   // FEC-corrected output
-    wire [4:0]  fec_syndrome_w;
-    wire        fec_error_detected_w;
-    wire        fec_error_corrected_w;
+    // Declare lpf_tmr_control_reg
+    reg [31:0] lpf_tmr_control_reg;
+    wire lpf_inject_b = lpf_tmr_control_reg[0];
 
-    // -----------------------------------------------------------------
-    // LPF TMR Stage: Three identical lpf_fir instances + 2-of-3 voter.
-    // All copies receive filter_din simultaneously. A stuck fault in one
-    // copy is overruled by the other two with ZERO latency.
-    // -----------------------------------------------------------------
-    lpf_fir #(.DATA_WIDTH(DATA_WIDTH)) inst_lpf_a (
-        .clk(hclk), .rst(!hresetn), .enable(filter_enable), .din(filter_din), .dout(lpf_out_a)
-    );
-    wire signed [DATA_WIDTH-1:0] lpf_out_b_raw;
-    lpf_fir #(.DATA_WIDTH(DATA_WIDTH)) inst_lpf_b (
-        .clk(hclk), .rst(!hresetn), .enable(filter_enable), .din(filter_din), .dout(lpf_out_b_raw)
-    );
-    assign lpf_out_b = lpf_inject_b ? {DATA_WIDTH{1'b0}} : lpf_out_b_raw;
-    wire signed [DATA_WIDTH-1:0] lpf_out_c_raw;
-    lpf_fir #(.DATA_WIDTH(DATA_WIDTH)) inst_lpf_c (
-        .clk(hclk), .rst(!hresetn), .enable(filter_enable), .din(filter_din), .dout(lpf_out_c_raw)
-    );
-    assign lpf_out_c = lpf_inject_c ? {DATA_WIDTH{1'b0}} : lpf_out_c_raw;
-    tmr_voter #(.DATA_WIDTH(DATA_WIDTH)) inst_lpf_tmr (
-        .in_a(lpf_out_a), .in_b(lpf_out_b), .in_c(lpf_out_c),
-        .voted_out(lpf_voted_out),
-        .tmr_mismatch(lpf_mismatch_w), .tmr_err_ab(lpf_err_ab_w),
-        .tmr_err_bc(lpf_err_bc_w),     .tmr_err_ac(lpf_err_ac_w),
-        .tmr_error_mask(lpf_error_mask_w)
+    // Declare glitch_tmr_control_reg and glitch_inject_b/c
+    reg [31:0] glitch_tmr_control_reg;
+    wire glitch_inject_b = glitch_tmr_control_reg[0];
+    wire glitch_inject_c = glitch_tmr_control_reg[1];
+
+    // Instantiate the full filter chain
+    wire signed [DATA_WIDTH-1:0] rcvr_ctle_out, rcvr_dc_offset_out, rcvr_fir_eq_out, rcvr_dfe_out, rcvr_glitch_out, rcvr_lpf_out, rcvr_data_out;
+    wire [4:0] rcvr_fec_syndrome;
+    wire rcvr_fec_error_detected, rcvr_fec_error_corrected;
+
+    // Declare filter_din as reg
+    reg [DATA_WIDTH-1:0] filter_din;
+
+    wireline_rcvr_chain #(
+        .DATA_WIDTH(DATA_WIDTH)
+    ) u_filter_chain (
+        .clk(hclk),
+        .rst(!hresetn),
+        .enable(filter_enable),
+        .data_in(filter_din),
+        .fec_err_inject(fec_err_inject),
+        .fec_err_bit(fec_err_bit),
+        .data_out(rcvr_data_out),
+        .fec_syndrome(rcvr_fec_syndrome),
+        .fec_error_detected(rcvr_fec_error_detected),
+        .fec_error_corrected(rcvr_fec_error_corrected)
+        // Removed debug port connections: ctle_out, dc_offset_out, fir_eq_out, dfe_out, glitch_out, lpf_out
     );
 
     // -----------------------------------------------------------------
@@ -295,11 +271,16 @@ module ahb_filter_slave(
     //   0x34  FEC_SYNDROME (R)   5-bit last syndrome
     //   0x38  FEC_ERR_CNT  (R)   cumulative corrected error count
     // -----------------------------------------------------------------
+
+    // Declare fec_encoded_cw as a wire vector
+    wire [FEC_CW_WIDTH-1:0] fec_encoded_cw;
     fec_encoder #(.DATA_WIDTH(DATA_WIDTH), .CODEWORD_WIDTH(FEC_CW_WIDTH)) inst_fec_enc (
         .clk(hclk), .rst(!hresetn), .enable(filter_enable),
         .din(tmr_voted_out), .codeword(fec_encoded_cw)  // TMR output feeds FEC
     );
 
+    // Declare fec_channel_cw as a vector and assign each bit in generate loop
+    wire [FEC_CW_WIDTH-1:0] fec_channel_cw;
     genvar fec_gi;
     generate
         for (fec_gi = 0; fec_gi < FEC_CW_WIDTH; fec_gi = fec_gi + 1) begin : fec_inj_loop
@@ -323,6 +304,7 @@ module ahb_filter_slave(
     // will appear after PIPELINE_LAT cycles; because we're streaming one
     // sample per cycle the outputs will appear one-per-cycle after the
     // initial latency. A counter delays the capture of first valid output.
+    // PIPELINE_LAT is a parameter, so $clog2(PIPELINE_LAT+1) is constant
     reg [$clog2(PIPELINE_LAT+1)-1:0] latency_cnt;
     reg pipeline_active;
 
@@ -547,7 +529,8 @@ module ahb_filter_slave(
                 // streaming active: feed one sample per cycle while samples_to_feed>0
                 if (samples_to_feed > 0) begin
                     // pop from in_fifo and drive filter_din
-                    filter_din <= to_sample(in_fifo[in_head]);
+                    // Remove to_sample, just assign lower DATA_WIDTH bits
+                    filter_din <= in_fifo[in_head][DATA_WIDTH-1:0];
                     in_head <= (in_head + 1) % FIFO_DEPTH;
                     in_count <= in_count - 1;
                     samples_to_feed <= samples_to_feed - 1;

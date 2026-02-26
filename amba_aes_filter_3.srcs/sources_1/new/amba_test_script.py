@@ -7,7 +7,7 @@ import random
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
-SERIAL_PORT = 'COM5'  # Change this to your Basys 3 COM port
+SERIAL_PORT = 'COM10'  # Change this to your Basys 3 COM port
 BAUD_RATE = 115200
 TIMEOUT = 1
 
@@ -17,6 +17,14 @@ ADDR_RAM2   = 0x10000000
 ADDR_FILTER = 0x40000000
 ADDR_AES    = 0x50000000
 ADDR_SYS    = 0xE0000000
+
+# Filter debug output registers (must match Verilog mapping)
+ADDR_CTLE_OUT      = ADDR_FILTER + 0x20
+ADDR_DC_OFFSET_OUT = ADDR_FILTER + 0x24
+ADDR_FIR_EQ_OUT    = ADDR_FILTER + 0x28
+ADDR_DFE_OUT       = ADDR_FILTER + 0x2C
+ADDR_GLITCH_OUT    = ADDR_FILTER + 0x30
+ADDR_LPF_OUT       = ADDR_FILTER + 0x34
 
 # ==============================================================================
 # UART DRIVER
@@ -88,27 +96,54 @@ def test_ram(ser):
 
 def test_filter(ser):
     print("\n--- Testing Filter Chain (Slave 3) ---")
-    # Filter chain has 6 cycle latency.
-    # We write a sample, wait slightly, then read.
-    
-    sample = 0x00000100 # 256
-    print(f"[*] Writing Sample: {sample} to Filter...")
-    ahb_write(ser, ADDR_FILTER, sample)
-    
-    # Simulate processing time (UART is slow enough, but good to be explicit)
-    time.sleep(0.01) 
-    
-    result = ahb_read(ser, ADDR_FILTER)
-    # Extract 12-bit result (assuming lower 12 bits)
-    if result is not None:
-        filtered_val = result & 0xFFF
-        print(f"[*] Read Result: 0x{result:08X} (Filtered: {filtered_val})")
-        
-        # Simple check: Output should not be exactly input usually, but depends on filter state.
-        # Just checking connectivity here.
-        print("[+] Filter Test Connectivity PASS")
+    print("\n--- Comprehensive Filter Chain Test (Slave 3) ---")
+    samples = [0x00000100, 0x00000200, 0x00000300, 0x00000400, 0x00000500]
+    results = []
+    pass_all = True
+    for idx, sample in enumerate(samples):
+        print(f"[*] Writing Sample {idx+1}: {sample} to Filter...")
+        ahb_write(ser, ADDR_FILTER, sample)
+        time.sleep(0.02)  # Slightly longer for chain latency
+        # Read per-stage outputs
+        ctle_out      = ahb_read(ser, ADDR_CTLE_OUT)
+        dc_offset_out = ahb_read(ser, ADDR_DC_OFFSET_OUT)
+        fir_eq_out    = ahb_read(ser, ADDR_FIR_EQ_OUT)
+        dfe_out       = ahb_read(ser, ADDR_DFE_OUT)
+        glitch_out    = ahb_read(ser, ADDR_GLITCH_OUT)
+        lpf_out       = ahb_read(ser, ADDR_LPF_OUT)
+        result        = ahb_read(ser, ADDR_FILTER)
+        if result is not None:
+            filtered_val = result & 0xFFF
+            sample_12b = sample & 0xFFF
+            results.append(filtered_val)
+            print(f"[*] Stage Outputs:")
+            print(f"    CTLE      : {ctle_out if ctle_out is not None else 'ERR'}")
+            print(f"    DC Offset : {dc_offset_out if dc_offset_out is not None else 'ERR'}")
+            print(f"    FIR EQ    : {fir_eq_out if fir_eq_out is not None else 'ERR'}")
+            print(f"    DFE       : {dfe_out if dfe_out is not None else 'ERR'}")
+            print(f"    Glitch    : {glitch_out if glitch_out is not None else 'ERR'}")
+            print(f"    LPF       : {lpf_out if lpf_out is not None else 'ERR'}")
+            print(f"    Final Out : 0x{result:08X} (Filtered: {filtered_val})")
+            # Improved check: compare only lower 12 bits, and flag all-zero output
+            if filtered_val == sample_12b:
+                print(f"[-] Filter output matches input (0x{filtered_val:03X})! Possible filter bypass or error.")
+                pass_all = False
+            elif filtered_val == 0:
+                print(f"[-] Filter output is zero! Possible malfunction or overly aggressive filtering.")
+                pass_all = False
+            else:
+                print(f"[+] Filter output differs from input (0x{sample_12b:03X} -> 0x{filtered_val:03X}). Filter working.")
+        else:
+            print(f"[-] Filter Test FAIL (Read Error) for sample {sample}")
+            pass_all = False
+    print("\n--- Filter Chain Results ---")
+    for idx, sample in enumerate(samples):
+        print(f"Sample {idx+1}: Input={sample & 0xFFF}")
+    print("(See above for per-stage outputs)")
+    if pass_all:
+        print("\n[+] Comprehensive Filter Test PASS: All outputs valid and filter working.")
     else:
-        print("[-] Filter Test FAIL (Read Error)")
+        print("\n[-] Comprehensive Filter Test FAIL: One or more outputs invalid or zero.")
 
 def test_aes(ser):
     print("\n--- Testing AES (Slave 4) ---")
@@ -120,30 +155,62 @@ def test_aes(ser):
     
     # 1. Write Key (Dummy)
     print("[*] Writing AES Key...")
+    key = [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF]
     for i in range(4):
-        ahb_write(ser, ADDR_AES + (i*4), 0xFFFFFFFF)
-        
-    # 2. Write Plaintext
+        ahb_write(ser, ADDR_AES + (i*4), key[i])
+
+    # 2. Write Plaintext (example)
     print("[*] Writing AES Plaintext...")
+    plaintext = [0x12345678, 0x9ABCDEF0, 0x0F1E2D3C, 0x4B5A6978]
     for i in range(4):
-        ahb_write(ser, ADDR_AES + 0x10 + (i*4), 0x00000000)
-        
+        ahb_write(ser, ADDR_AES + 0x10 + (i*4), plaintext[i])
+
     # 3. Start Encryption
     print("[*] Starting Encryption...")
     ahb_write(ser, ADDR_AES + 0x20, 1)
-    
+
     # 4. Wait for completion (UART delay is usually enough)
     time.sleep(0.05)
-    
+
     # 5. Read Ciphertext
     print("[*] Reading Ciphertext...")
-    c0 = ahb_read(ser, ADDR_AES + 0x30)
-    
-    if c0 is not None: 
-        print(f"[*] Ciphertext[0]: 0x{c0:08X}")
-        print("[+] AES Test Connectivity PASS")
-    else:
+    ciphertext = []
+    for i in range(4):
+        c = ahb_read(ser, ADDR_AES + 0x30 + (i*4))
+        ciphertext.append(c)
+        print(f"[*] Ciphertext[{i}]: 0x{c:08X}" if c is not None else f"[-] AES Test FAIL (Read Error)")
+
+    if None in ciphertext:
         print("[-] AES Test FAIL (Read Error)")
+        return
+
+    # 6. Write Ciphertext as new input (simulate decryption)
+    print("[*] Writing Ciphertext as input for decryption...")
+    for i in range(4):
+        ahb_write(ser, ADDR_AES + 0x10 + (i*4), ciphertext[i])
+
+    # 7. Start Encryption again (XOR model: encrypting ciphertext with same key should return plaintext)
+    print("[*] Starting Decryption (re-encrypt with same key)...")
+    ahb_write(ser, ADDR_AES + 0x20, 1)
+    time.sleep(0.05)
+
+    # 8. Read Decrypted Text
+    print("[*] Reading Decrypted Text...")
+    decrypted = []
+    for i in range(4):
+        d = ahb_read(ser, ADDR_AES + 0x30 + (i*4))
+        decrypted.append(d)
+        print(f"[*] Decrypted[{i}]: 0x{d:08X}" if d is not None else f"[-] AES Decrypt FAIL (Read Error)")
+
+    if None in decrypted:
+        print("[-] AES Decrypt FAIL (Read Error)")
+        return
+
+    # 9. Compare decrypted with original plaintext
+    if decrypted == plaintext:
+        print("[+] AES Encrypt/Decrypt Test PASS (decrypted matches original)")
+    else:
+        print("[-] AES Encrypt/Decrypt Test FAIL (decrypted does not match original)")
 
 def power_analysis_loop(ser):
     print("\n==================================================")
