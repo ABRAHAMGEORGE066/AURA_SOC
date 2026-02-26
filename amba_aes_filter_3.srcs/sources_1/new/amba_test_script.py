@@ -222,42 +222,48 @@ def power_analysis_loop(ser):
     # 1. Disable Clock Gating
     print("\n[STEP 1] Disabling Clock Gating (High Power Mode)...")
     ahb_write(ser, ADDR_SYS, 0)
-    
     input(">>> Press ENTER to start traffic loop (Gating OFF)...")
     print("[*] Running traffic for 10 seconds...")
-    
     start_time = time.time()
     ops = 0
     while time.time() - start_time < 10:
-        # Perform random R/W to all slaves to keep clock active
         ahb_write(ser, ADDR_RAM1, 0xAAAA5555)
         ahb_read(ser, ADDR_RAM1)
         ahb_write(ser, ADDR_FILTER, 0x123)
         ahb_read(ser, ADDR_FILTER)
         ops += 1
-        
     print(f"[+] Done. Operations performed: {ops}")
-    print(">>> Measure your baseline power now if holding peak.")
+    # Prompt for measured power
+    power_high = input("Enter measured power (High Power Mode, mW): ")
     
     # 2. Enable Clock Gating
     print("\n[STEP 2] Enabling Clock Gating (Low Power Mode)...")
     ahb_write(ser, ADDR_SYS, 1)
-    
     input(">>> Press ENTER to start traffic loop (Gating ON)...")
     print("[*] Running traffic for 10 seconds...")
-    
     start_time = time.time()
     ops = 0
     while time.time() - start_time < 10:
-        # Same traffic pattern
         ahb_write(ser, ADDR_RAM1, 0xAAAA5555)
         ahb_read(ser, ADDR_RAM1)
         ahb_write(ser, ADDR_FILTER, 0x123)
         ahb_read(ser, ADDR_FILTER)
         ops += 1
-        
     print(f"[+] Done. Operations performed: {ops}")
-    print("[*] Compare the power measurements.")
+    power_low = input("Enter measured power (Low Power Mode, mW): ")
+    
+    # Comparison
+    try:
+        power_high = float(power_high)
+        power_low = float(power_low)
+        diff = power_high - power_low
+        percent = (diff / power_high) * 100 if power_high else 0
+        print(f"\n[*] Power Comparison:")
+        print(f"    High Power Mode: {power_high:.2f} mW")
+        print(f"    Low Power Mode:  {power_low:.2f} mW")
+        print(f"    Power Saved:     {diff:.2f} mW ({percent:.1f}% reduction)")
+    except ValueError:
+        print("[-] Invalid input for power values. Comparison skipped.")
 
 # ==============================================================================
 # MAIN

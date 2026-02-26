@@ -19,11 +19,12 @@ module ahb_clock_gate(
 );
 
     // For FPGA: Use clock enable signals instead of gating the clock
-    // These enables should be used in always @(posedge hclk) blocks in the rest of the design
-    assign master_ce  = enable;
-    assign slave1_ce  = hsel_1;
-    assign slave2_ce  = hsel_2;
-    assign slave3_ce  = hsel_3;
+        // Clock gating disabled: all enables forced ON
+        assign master_ce  = 1'b1;
+        assign slave1_ce  = 1'b1;
+        assign slave2_ce  = 1'b1;
+        assign slave3_ce  = 1'b1;
+        assign slave4_ce  = 1'b1;
     assign slave4_ce  = hsel_4;
 
 endmodule

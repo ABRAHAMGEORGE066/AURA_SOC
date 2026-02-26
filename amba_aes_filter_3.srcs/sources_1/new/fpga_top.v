@@ -66,16 +66,19 @@ module fpga_top (
     // System Control Register (Clock Gating Enable)
     reg cg_enable;
     always @(posedge hclk or negedge hresetn) begin
-        if (!hresetn) cg_enable <= 0;
-        else if (hsel_sys && hwrite && hready) cg_enable <= hwdata[0];
+        if (!hresetn)
+            cg_enable <= 0;  // Reset: clock gating disabled
+        else
+            cg_enable <= 0;  // Clock gating always disabled
     end
 
     // Clock Gating Logic
     // Gate clock if: CG Enabled AND Slave Not Selected AND Slave Ready (Idle)
-    wire clk_s1 = (cg_enable && !hsel_s1 && hready_s1) ? 1'b0 : hclk;
-    wire clk_s2 = (cg_enable && !hsel_s2 && hready_s2) ? 1'b0 : hclk;
-    wire clk_s3 = (cg_enable && !hsel_s3 && hready_s3) ? 1'b0 : hclk;
-    wire clk_s4 = (cg_enable && !hsel_s4 && hready_s4) ? 1'b0 : hclk;
+        // Clock gating disabled: clocks always ON
+        wire clk_s1 = hclk;
+        wire clk_s2 = hclk;
+        wire clk_s3 = hclk;
+        wire clk_s4 = hclk;
 
     // Muxing Read Data
     reg [31:0] mux_hrdata;

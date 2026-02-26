@@ -143,8 +143,6 @@ module ahb_filter_slave(
     reg fec_error_corrected_r, fec_error_corrected_rr;
     reg fec_error_detected_r;
     reg [4:0] fec_syndrome_r;
-    reg lpf_mismatch_r, lpf_mismatch_rr;
-    reg glitch_mismatch_r, glitch_mismatch_rr;
 
 
 
