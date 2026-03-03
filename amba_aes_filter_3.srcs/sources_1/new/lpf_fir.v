@@ -12,8 +12,8 @@ module lpf_fir #(
 
     // Shift register for samples
     reg signed [DATA_WIDTH-1:0] x0, x1, x2, x3, x4;
-    reg signed [DATA_WIDTH+3:0] acc;  // wider accumulator
-    reg signed [DATA_WIDTH+3:0] acc_div; // pipeline register for division
+    reg signed [DATA_WIDTH+4:0] acc;     // wider accumulator: max=9*2047=18423, needs 15 bits unsigned → 16-bit signed
+    reg signed [DATA_WIDTH+4:0] acc_div;  // pipeline register for division (holds acc/9 ≤ 2047, fits in 12 b)
     reg signed [DATA_WIDTH-1:0] dout_pipe; // second pipeline stage for output
 
     always @(posedge clk) begin

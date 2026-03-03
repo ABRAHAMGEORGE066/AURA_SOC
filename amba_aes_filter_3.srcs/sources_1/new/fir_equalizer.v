@@ -14,8 +14,9 @@ module fir_equalizer #(
     // Shift register for samples
     reg signed [DATA_WIDTH-1:0] shift_reg [0:TAP_NUM-1];
 
-    // Accumulator
-    reg signed [DATA_WIDTH+5:0] acc;
+    // Accumulator — needs DATA_WIDTH + ceil(log2(TAP_NUM)) + ceil(log2(max_coeff)) bits
+    // max_coeff=256 (8 bits), TAP_NUM=7, DATA_WIDTH=12 → min 23 bits; use +13 (25-bit) for margin
+    reg signed [DATA_WIDTH+12:0] acc;
 
     // Preset symmetric coefficients: [-32, -64, 128, 256, 128, -64, -32]
     // Normalized by 256 (see FILTER_CHAIN_ARCHITECTURE.md)
@@ -46,8 +47,19 @@ module fir_equalizer #(
             for (i = 0; i < TAP_NUM; i = i + 1)
                 acc = acc + shift_reg[i] * coeff[i];
 
-            // Scale output (divide by 256)
-            dout <= acc >>> 8;
+            // Scale output (divide by 256) then saturate to DATA_WIDTH bits
+            // acc>>>8 is up to 17 bits; saturate to [-2^(DW-1), 2^(DW-1)-1] so
+            // the output matches the Python golden model's _sc() clip behaviour.
+            begin : sat_blk
+                reg signed [DATA_WIDTH:0] scaled;
+                scaled = acc >>> 8;
+                if (scaled > $signed({1'b0, {(DATA_WIDTH-1){1'b1}}}))
+                    dout <= {1'b0, {(DATA_WIDTH-1){1'b1}}};          // max positive
+                else if (scaled < $signed({1'b1, {(DATA_WIDTH-1){1'b0}}}))
+                    dout <= {1'b1, {(DATA_WIDTH-1){1'b0}}};          // min negative
+                else
+                    dout <= scaled[DATA_WIDTH-1:0];
+            end
         end else begin
             dout <= din;   // bypass
         end
