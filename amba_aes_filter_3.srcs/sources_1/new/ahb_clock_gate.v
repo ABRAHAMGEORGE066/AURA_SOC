@@ -18,13 +18,13 @@ module ahb_clock_gate(
     output slave4_ce     // Clock enable for slave 4
 );
 
-    // For FPGA: Use clock enable signals instead of gating the clock
-        // Clock gating disabled: all enables forced ON
-        assign master_ce  = 1'b1;
-        assign slave1_ce  = 1'b1;
-        assign slave2_ce  = 1'b1;
-        assign slave3_ce  = 1'b1;
-        assign slave4_ce  = 1'b1;
-    assign slave4_ce  = hsel_4;
+    // Clock enable logic:
+    //   enable=0 (gating OFF) : all CEs = 1 → clocks always run (high power mode)
+    //   enable=1 (gating ON)  : CE = 1 only when that slave is selected (low power mode)
+    assign master_ce  = ~enable | (hsel_1 | hsel_2 | hsel_3 | hsel_4);
+    assign slave1_ce  = ~enable | hsel_1;
+    assign slave2_ce  = ~enable | hsel_2;
+    assign slave3_ce  = ~enable | hsel_3;
+    assign slave4_ce  = ~enable | hsel_4;
 
 endmodule

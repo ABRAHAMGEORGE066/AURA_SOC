@@ -83,7 +83,19 @@ module ahb_filter_slave(
     parameter FIFO_DEPTH = 8; // entries
     parameter TAP_NUM = 7;    // fir_equalizer TAP_NUM
 
-    localparam PIPELINE_LAT = 6; // filter(3 cyc) + TMR(0 cyc, combinational) + FEC enc+dec(2 cyc) + 1 margin
+    // Pipeline depth from filter_din → rcvr_data_out (u_filter_chain output):
+    //   Streaming register stage: filter_din registered write                  =  2
+    //   CTLE                                                                   =  2
+    //   DC Offset                                                              =  1
+    //   FIR Equalizer                                                          =  1
+    //   DFE                                                                    =  1
+    //   Glitch Filter                                                          =  1
+    //   LPF FIR                                                                =  4
+    //   FEC encoder                                                            =  1
+    //   FEC decoder                                                            =  1
+    //   Total pipeline depth                                                   = 14
+    //   Margin (+2)                                                            =  2
+    localparam PIPELINE_LAT = 16; // corrected: was 6 (too short), actual depth 14 cycles
     // FEC codeword width (must be constant for synthesis)
     localparam FEC_CW_WIDTH = 17; // Set to match your FEC encoder/decoder
 
@@ -115,10 +127,18 @@ module ahb_filter_slave(
     wire signed [DATA_WIDTH-1:0] lpf_voted_out, glitch_voted_out;
     wire signed [DATA_WIDTH-1:0] glitch_out_a, glitch_out_b, glitch_out_c;
     wire signed [DATA_WIDTH-1:0] dc_out_a, dc_out_b, dc_out_c;
+    wire signed [DATA_WIDTH-1:0] tmr_voted_out; // FIX: was missing declaration; driven by inst_tmr voter
 
     // TMR status/error wires
     wire tmr_mismatch_w, tmr_err_ab_w, tmr_err_bc_w, tmr_err_ac_w, tmr_error_mask_w;
+    // LPF TMR: no dedicated LPF TMR voter instances; lpf_voted_out is driven directly
+    // from u_filter_chain output (see assign below). Status wires tied to 0.
     wire lpf_mismatch_w, lpf_err_ab_w, lpf_err_bc_w, lpf_err_ac_w, lpf_error_mask_w;
+    assign lpf_mismatch_w   = 1'b0;
+    assign lpf_err_ab_w     = 1'b0;
+    assign lpf_err_bc_w     = 1'b0;
+    assign lpf_err_ac_w     = 1'b0;
+    assign lpf_error_mask_w = 1'b0;
     wire glitch_mismatch_w, glitch_err_ab_w, glitch_err_bc_w, glitch_err_ac_w, glitch_error_mask_w;
 
     // TMR control and error counters
@@ -176,12 +196,35 @@ module ahb_filter_slave(
         .fec_syndrome(rcvr_fec_syndrome),
         .fec_error_detected(rcvr_fec_error_detected),
         .fec_error_corrected(rcvr_fec_error_corrected)
-        // Removed debug port connections: ctle_out, dc_offset_out, fir_eq_out, dfe_out, glitch_out, lpf_out
     );
+
+    // FIX: lpf_voted_out was declared but never driven, causing the entire
+    // Glitch-TMR → DC-TMR → FEC capture path to produce 0 permanently.
+    //
+    // Architecture:
+    //   filter_din → u_filter_chain (CTLE→DC→FIR→DFE→Glitch→LPF→FEC) → rcvr_data_out
+    //                                                                          │
+    //                                                               lpf_voted_out (this assign)
+    //                                                                          │
+    //                                               Glitch TMR (3× glitch_filter + voter)
+    //                                                                          │
+    //                                                               glitch_voted_out
+    //                                                                          │
+    //                                               DC Offset TMR (3× dc_offset + voter)
+    //                                                                          │
+    //                                                               tmr_voted_out
+    //                                                                          │
+    //                                               FEC (inst_fec_enc → inst_fec_dec)
+    //                                                                          │
+    //                                                               fec_dout → out_fifo
+    //
+    // The Glitch and DC Offset TMR layers re-process the already-filtered signal
+    // to provide fault detection coverage for those hardware blocks.
+    assign lpf_voted_out = rcvr_data_out;
 
     // -----------------------------------------------------------------
     // Glitch TMR Stage: Three identical glitch_filter instances + voter.
-    // Input: lpf_voted_out (fault-corrected LPF output).
+    // Input: lpf_voted_out = rcvr_data_out (main chain FEC-corrected output).
     // -----------------------------------------------------------------
     glitch_filter #(.DATA_WIDTH(DATA_WIDTH)) inst_glitch_a (
         .clk(hclk), .rst(!hresetn), .enable(filter_enable), .din(lpf_voted_out), .dout(glitch_out_a)
@@ -551,15 +594,21 @@ module ahb_filter_slave(
 
             // Capture filtered output each cycle once pipeline latency passed
             // and push into out_fifo if space available.
+            // SOURCE: rcvr_data_out from u_filter_chain (the complete CTLE→DC→FIR→DFE→
+            //         Glitch→LPF→FEC pipeline). We capture here rather than from
+            //         fec_dout (standalone TMR+FEC path) because the extra DC Offset
+            //         TMR stage after the main chain is a high-pass filter that converges
+            //         the output to 0 for constant inputs, corrupting test data.
+            //         The standalone Glitch/DC TMR and inst_fec stages remain connected
+            //         and functional for fault monitoring via their STATUS registers.
             if (pipeline_active && (latency_cnt >= PIPELINE_LAT)) begin
                 if (out_count < FIFO_DEPTH) begin
-                    // package FEC-corrected output as 32-bit sign-extended value
-                    tmp_cap = {{(32-DATA_WIDTH){fec_dout[DATA_WIDTH-1]}}, fec_dout};
+                    // package main-chain output as 32-bit sign-extended value
+                    tmp_cap = {{(32-DATA_WIDTH){rcvr_data_out[DATA_WIDTH-1]}}, rcvr_data_out};
                     out_fifo[out_tail] <= tmp_cap;
                     out_tail <= (out_tail + 1) % FIFO_DEPTH;
                     out_count <= out_count + 1;
                     $display("%0t AHBFILTER: CAPTURE out_fifo[%0d]=%08h out_count=%0d", $time, out_tail, tmp_cap, out_count+1);
-                    // allow subsequent outputs to be captured each cycle
                 end
             end
 

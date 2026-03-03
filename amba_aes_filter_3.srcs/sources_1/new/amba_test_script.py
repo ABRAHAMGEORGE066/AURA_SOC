@@ -29,10 +29,18 @@ ADDR_FILTER_STATUS = ADDR_FILTER + 0x0C  # STATUS    (R)       : [11:8]=in_cnt, 
 # FILTER GOLDEN MODEL
 # Replicates each RTL stage from wireline_rcvr_chain.v for pass/fail comparison.
 # ==============================================================================
-# PIPELINE_LAT in the RTL is 6 cycles, but the actual filter depth is ~12 cycles
-# (CTLE:3 + DC:1 + FIR:1 + DFE:1 + Glitch:1 + LPF:3 + FEC_enc:1 + FEC_dec:1).
-# GOLDEN_CYCLES must be >= actual pipeline depth so the model reaches steady state.
-GOLDEN_CYCLES = 30   # run each sample 30 cycles; ensures full pipeline flush
+# RTL capture timing (ahb_filter_slave.v, PIPELINE_LAT = 16):
+#   Streaming delay (filter_din registered): 2 cycles
+#   CTLE:  2  |  DC Offset: 1  |  FIR EQ: 1  |  DFE:  1
+#   Glitch: 1  |  LPF:      4  |  FEC:    2
+#   Total = 2 + 2+1+1+1+1+4+2 = 14 cycles + 2 margin = PIPELINE_LAT 16
+#
+# STEADY_CYCLES: after capturing at PIPELINE_LAT, the HW runs the filter at
+# constant filter_din for ~5,000,000 clock cycles (the 50ms time.sleep).
+# The model must simulate the filter settling to steady-state between samples.
+# 500 cycles is enough for the slowest stage (DC Offset, time constant=16 cyc).
+PIPELINE_LAT  = 16   # must match ahb_filter_slave.v PIPELINE_LAT
+STEADY_CYCLES = 500  # simulates idle filter running at constant input between samples
 FILTER_DW     = 12   # data width
 
 def _sc(val, bits=FILTER_DW):
@@ -47,27 +55,44 @@ def _vdiv(num, den):
     return sign * (abs(num) // abs(den))
 
 class _CTLE:
-    """CTLE: dout = boosted_{N-1}; boosted = din + (diff_{N-1}>>alpha); 3-cycle latency."""
+    """
+    CTLE — matches ctle.v exactly (2-register pipeline).
+    Cycle N (non-blocking assignments):
+      diff      <= din      - prev_sample   (new diff from OLD prev)
+      boosted   <= din      + (diff >>> 2)  (new boost from OLD diff)
+      dout      <= boosted                  (output = OLD boosted)
+      prev_sample <= din
+    Latency: 2 cycles (diff reg + boosted reg before dout).
+    """
     def __init__(self):
-        self.prev = 0; self.diff = 0; self.boosted = 0; self.dout = 0
+        self.prev = 0; self.diff = 0; self.boosted = 0
     def clock(self, din):
         din = _sc(din)
-        nd = din - self.prev
-        nb = din + (self.diff >> 2)   # ALPHA_SHIFT=2
-        nd2 = _sc(self.boosted)
-        self.diff = nd; self.boosted = nb; self.prev = din; self.dout = nd2
-        return self.dout
+        new_diff    = din - self.prev                    # uses old prev
+        new_boosted = din + (self.diff >> 2)             # uses old diff
+        new_dout    = self.boosted                       # output = old boosted
+        self.diff    = new_diff
+        self.boosted = new_boosted
+        self.prev    = din
+        return _sc(new_dout)
 
 class _DCOffset:
-    """DC Offset: avg IIR (alpha=1/16); dout = din - old_avg; 1-cycle latency."""
+    """
+    DC Offset filter — matches dc_offset_filter.v exactly.
+    Cycle N (non-blocking):
+      avg  <= avg + ((din - avg) >>> 4)   (updates using OLD avg)
+      dout <= din - avg                   (uses OLD avg, no extra clip)
+    Latency: 1 cycle.
+    """
     def __init__(self):
-        self.avg = 0; self.dout = 0
+        self.avg = 0
     def clock(self, din):
-        din = _sc(din)
-        nd = _sc(din - self.avg)
-        self.avg = self.avg + ((din - self.avg) >> 4)  # ALPHA_SHIFT=4
-        self.dout = nd
-        return self.dout
+        din     = _sc(din)
+        old_avg = self.avg
+        new_dout = din - old_avg                                # RTL: din - avg (no extra clip)
+        self.avg = old_avg + ((din - old_avg) >> 4)            # IIR update
+        # Truncate to DATA_WIDTH bits (what happens naturally in the wire)
+        return _sc(new_dout)
 
 class _FIREq:
     """7-tap FIR Equalizer: coeffs=[-32,-64,128,256,128,-64,-32]/256; 1-cycle latency."""
@@ -83,78 +108,135 @@ class _FIREq:
         return self.dout
 
 class _DFE:
-    """DFE: dout = din - old_feedback; decision on old dout; DFE_COEFF=64; 1-cycle."""
+    """
+    DFE — matches dfe.v exactly (2-register feedback path).
+    Cycle N (non-blocking):
+      feedback <=  prev_decision * 64   (uses OLD prev_decision)
+      dout     <=  din - feedback       (uses OLD feedback)
+      prev_decision <= decision(dout)   (uses OLD dout)
+    Latency: 1 cycle output, but 2-cycle closed-loop feedback delay.
+    """
     def __init__(self):
         self.prev_dec = 0; self.fb = 0; self.dout = 0
     def clock(self, din):
-        din = _sc(din)
-        nd = _sc(din - self.fb)
-        new_fb = self.prev_dec * 64
-        new_dec = 1 if self.dout >= 0 else -1
-        self.fb = new_fb; self.prev_dec = new_dec; self.dout = nd
+        din      = _sc(din)
+        new_fb   = self.prev_dec * 64             # new feedback from OLD decision
+        new_dout = _sc(din - self.fb)             # output uses OLD feedback
+        new_dec  = 1 if self.dout >= 0 else -1    # decision on OLD dout
+        self.fb       = new_fb
+        self.dout     = new_dout
+        self.prev_dec = new_dec
         return self.dout
 
 class _Glitch:
-    """Glitch filter: 3-point median; only apply when spike > THRESHOLD=512."""
+    """
+    Glitch filter — matches glitch_filter.v exactly.
+    Median computed combinationally; abs_diff threshold check combinational.
+    Cycle N:
+      dout <= median(din,s1,s2) if |din-s1|>512 else din
+      s1   <= din
+      s2   <= s1
+    Latency: 1 cycle.
+    """
     def __init__(self):
-        self.s1 = 0; self.s2 = 0; self.dout = 0
+        self.s1 = 0; self.s2 = 0
     def clock(self, din):
         din = _sc(din)
         s1, s2 = self.s1, self.s2
-        median = sorted([din, s1, s2])[1]
-        nd = median if abs(din - s1) > 512 else din
-        self.s1 = din; self.s2 = s1; self.dout = nd
-        return self.dout
+        # Combinational median (matches Verilog always@* block)
+        if (din >= s1 and din <= s2) or (din <= s1 and din >= s2):
+            median = din
+        elif (s1 >= din and s1 <= s2) or (s1 <= din and s1 >= s2):
+            median = s1
+        else:
+            median = s2
+        abs_diff = abs(din - s1)  # matches Verilog: diff = din - s1; abs_diff
+        new_dout = median if abs_diff > 512 else din
+        self.s1 = din
+        self.s2 = s1
+        return _sc(new_dout)
 
 class _LPF:
-    """LPF FIR (1,2,3,2,1)/9 — 3-cycle pipeline; Verilog truncate division."""
+    """
+    LPF FIR — matches lpf_fir.v (1,2,3,2,1)/9 with 4-register pipeline.
+    Cycle N (non-blocking, uses OLD state):
+      x4..x0 shift: x4<=x3, x3<=x2, x2<=x1, x1<=x0, x0<=din
+      acc      <= x0 + x1*2 + x2*3 + x3*2 + x4          (old x's)
+      acc_div  <= acc / 9                                  (old acc, truncate-toward-zero)
+      dout_pipe <= acc_div                                 (old acc_div)
+      dout      <= dout_pipe                              (old dout_pipe)
+    Latency: 4 cycles. Steady state for constant input: 8 cycles.
+    """
     def __init__(self):
-        self.x = [0]*5; self.acc = 0; self.acc_d = 0; self.pipe = 0; self.dout = 0
+        self.x        = [0]*5
+        self.acc      = 0
+        self.acc_div  = 0
+        self.dout_pipe = 0
+        self.dout     = 0
     def clock(self, din):
         din = _sc(din)
-        ox = self.x
-        new_acc = ox[0] + (ox[1] << 1) + ox[2]*3 + (ox[3] << 1) + ox[4]
-        new_ad  = _vdiv(self.acc, 9)
-        new_p   = _sc(self.acc_d)
-        nd      = _sc(self.pipe)
-        self.x = [din] + ox[:4]
-        self.acc = new_acc; self.acc_d = new_ad; self.pipe = new_p; self.dout = nd
+        ox = self.x                                            # old x state
+        new_acc      = ox[0] + (ox[1] << 1) + ox[2]*3 + (ox[3] << 1) + ox[4]
+        new_acc_div  = _vdiv(self.acc, 9)                     # uses OLD acc
+        new_dout_pipe = self.acc_div                          # uses OLD acc_div
+        new_dout     = _sc(self.dout_pipe)                    # uses OLD dout_pipe
+        self.x        = [din] + ox[:4]                        # shift din in
+        self.acc      = new_acc
+        self.acc_div  = new_acc_div
+        self.dout_pipe = new_dout_pipe
+        self.dout     = new_dout
         return self.dout
 
 class FilterChainModel:
     """
-    Full 6-stage golden model: CTLE->DC_Offset->FIR_EQ->DFE->Glitch->LPF.
-    FEC is transparent (no error injection), adding 2 cycles with no data change.
+    Full golden model: CTLE->DC_Offset->FIR_EQ->DFE->Glitch->LPF->FEC.
+    FEC is data-transparent (no error injection), adding 2 pipeline cycles.
+    State is maintained between calls to model the continuous HW pipeline.
     """
     def __init__(self):
         self.ctle = _CTLE(); self.dc = _DCOffset(); self.fir = _FIREq()
         self.dfe  = _DFE();  self.gl = _Glitch();  self.lpf = _LPF()
-        # 2-cycle FEC pipeline (no transform when no errors injected)
-        self.fec_pipe = [0, 0]
+        self.fec_pipe = [0, 0]  # 2-cycle FEC pass-through
 
     def clock(self, din):
-        """Advance all stages by one clock cycle. Returns final 12-bit output."""
+        """Advance all stages by one clock cycle. Returns the 12-bit FEC output."""
         y = self.ctle.clock(din)
         y = self.dc.clock(y)
         y = self.fir.clock(y)
         y = self.dfe.clock(y)
         y = self.gl.clock(y)
         y = self.lpf.clock(y)
-        # 2-stage FEC pipeline (data pass-through)
-        y_fec = self.fec_pipe[0]
+        # 2-stage FEC pipeline (data unchanged when no errors injected)
+        y_out = self.fec_pipe[1]          # oldest entry exits first
         self.fec_pipe = [y, self.fec_pipe[0]]
-        return y_fec
+        return y_out
 
     def run_sample(self, sample_12b):
         """
-        Feed sample_12b as filter_din for GOLDEN_CYCLES clock ticks
-        (matching the testbench 'repeat(20) @(negedge hclk)' latency flush).
-        Returns the 12-bit unsigned output at the end of the flush.
+        Simulate one AHB write-then-capture cycle, matching HW timing exactly:
+
+          Phase 1 — Capture (PIPELINE_LAT cycles):
+            Run the filter for exactly PIPELINE_LAT clock ticks with sample_12b.
+            The last output is what the HW captures into out_fifo at tick 16.
+
+          Phase 2 — Settle (STEADY_CYCLES cycles):
+            After writing a sample the HW runs the filter at constant filter_din
+            for ~5,000,000 cycles during the 50 ms time.sleep(0.05). The model
+            must advance to the same steady state before the NEXT sample is run.
+            500 cycles covers the slowest stage (DC Offset time constant ~160 cyc).
+
+        Returns the 12-bit unsigned captured value (what DATA_OUT will return).
         """
-        out = 0
-        for _ in range(GOLDEN_CYCLES):
-            out = self.clock(sample_12b)
-        return out & 0xFFF
+        # Phase 1: run PIPELINE_LAT cycles, last output is the HW-captured value
+        captured = 0
+        for _ in range(PIPELINE_LAT):
+            captured = self.clock(sample_12b)
+
+        # Phase 2: advance to steady state (simulate idle 50ms between samples)
+        for _ in range(STEADY_CYCLES - PIPELINE_LAT):
+            self.clock(sample_12b)
+
+        return captured & 0xFFF
 
 # ==============================================================================
 # UART DRIVER
@@ -229,14 +311,9 @@ def test_filter(ser):
     print("  TEST: Filter Chain (Slave 3) — 6-Stage Wireline Receiver")
     print("=" * 56)
     print("  Stages: CTLE -> DC_Offset -> FIR_EQ -> DFE -> Glitch -> LPF -> FEC")
-    print("  Golden model replicates RTL from wireline_rcvr_chain.v")
-    print()
-    print("  NOTE: HW pass criterion matches reference_tb.v:")
-    print("    Pass = write accepted (in_cnt OK) AND read completes (out_cnt >= 1)")
-    print("    Golden column is INFORMATIONAL — shows model prediction for reference.")
-    print("  RTL note: lpf_voted_out wire in ahb_filter_slave.v is undriven, causing")
-    print("    fec_dout (captured into out_fifo) to be 0. Fix: connect lpf_voted_out")
-    print("    to u_filter_chain's LPF output or to rcvr_data_out.")
+    print(f"  Golden model: wireline_rcvr_chain.v | capture@{PIPELINE_LAT} cyc, settle@{STEADY_CYCLES} cyc")
+    print("  Architecture: u_filter_chain output captured directly; TMR/FEC stages")
+    print("                remain connected as fault monitors (STATUS registers).")
 
     # ---------------------------------------------------------------
     # STEP 0: Enable filter (bit0 of CONTROL register, offset 0x08)
@@ -299,19 +376,15 @@ def test_filter(ser):
     pass_all     = True
 
     # ---------------------------------------------------------------
-    # STEP 3: Write each sample, read result, compare
-    # Pass criterion (matches reference_tb.v):
-    #   Any readable 12-bit value is accepted — positive or negative.
-    #   This tests AHB connectivity and FIFO mechanics, not filter math.
-    #
-    # WHY DOUBLE-WRITE:
-    #   PIPELINE_LAT=6 in the RTL is shorter than the actual filter depth
-    #   (~12 cycles).  The first write captures fec_dout after only 6 cycles
-    #   (still 0 from pipeline startup).  Between UART transactions the FPGA
-    #   runs ~78 000 clock cycles (at 100 MHz / 115200 baud), so the pipeline
-    #   is fully settled before the second write.  The second write triggers a
-    #   fresh capture 6 cycles later from a settled pipeline state.
-    #   We drain the stale first-write FIFO entry before reading the settled one.
+    # STEP 3: Write each sample, read result, compare with golden model.
+    # Timing:
+    #   PIPELINE_LAT=16 in RTL captures rcvr_data_out 16 cycles after write.
+    #   time.sleep(0.05) = 50 ms = ~5,000,000 FPGA clock cycles >> 16 cycles,
+    #   so the capture is always complete by the time we call ahb_read().
+    # Pass criterion:
+    #   |hw_signed - golden_signed| <= TOLERANCE (±8 LSB), matching rounding
+    #   differences between integer Python and Verilog signed division.
+    #   Both the model and HW maintain state between samples (stateful pipeline).
     # ---------------------------------------------------------------
     print(f"\n[*] DATA_IN  write : 0x{ADDR_FILTER:08X}")
     print(f"[*] DATA_OUT read  : 0x{ADDR_FILTER_OUT:08X}")
@@ -329,20 +402,12 @@ def test_filter(ser):
         golden_out.append(g_out)
         g_signed = g_out if g_out < 0x800 else g_out - 0x1000
 
-        # --- PRIME WRITE: push sample into pipeline ---
-        #     First capture will be stale (0) due to PIPELINE_LAT < actual depth
-        ok_w1 = ahb_write(ser, ADDR_FILTER, sample_12b)
-        time.sleep(0.05)
-
-        # Drain stale first-write entry
-        st1 = ahb_read(ser, ADDR_FILTER_STATUS)
-        if st1 is not None and (st1 & 0xF) > 0:
-            ahb_read(ser, ADDR_FILTER_OUT)
-
-        # --- SETTLED WRITE: pipeline has been running at steady state ---
-        #     Next capture reflects the settled pipeline (or 0 if lpf_voted_out
-        #     is undriven in this bitstream — see RTL note above)
-        ok_w2 = ahb_write(ser, ADDR_FILTER, sample_12b)
+        # --- Write sample to DATA_IN ---
+        # PIPELINE_LAT is now correctly set to 16 in RTL, so a single write
+        # followed by time.sleep(0.05) (~5,000,000 FPGA clock cycles at 100 MHz)
+        # more than satisfies the 16-cycle capture window.
+        # The filter state carries over between samples (model also stateful).
+        ahb_write(ser, ADDR_FILTER, sample_12b)
         time.sleep(0.05)
 
         # --- Check STATUS ---
@@ -350,24 +415,20 @@ def test_filter(ser):
         out_cnt = (status & 0xF)        if status is not None else 0
         in_cnt  = ((status >> 8) & 0xF) if status is not None else 0
 
-        # --- Read settled result ---
+        # --- Read result from DATA_OUT ---
         result = ahb_read(ser, ADDR_FILTER_OUT)
 
-        if result is not None and (ok_w1 or ok_w2):
+        if result is not None:
             hw_val    = result & 0xFFF
             hw_signed = hw_val if hw_val < 0x800 else hw_val - 0x1000
             hw_outputs.append(hw_val)
 
-            # Pass criterion matching reference_tb.v:
-            # Any readable value means the AHB slave responded correctly.
-            # (Positive value in [0..2047] OR any negative sign-extended value)
-            hw_in_range = True   # 12-bit value is always valid by definition
-
-            # Also verify FIFO mechanics:
-            # out_cnt should have been >= 1 before our read popped the entry
-            fifo_ok = True  # we accept the result if we got a response
-
-            sample_pass = hw_in_range and fifo_ok
+            # --- Pass/fail: golden model comparison with tolerance ---
+            # Allow ±8 LSB for minor rounding differences between the integer
+            # Python model and the Verilog truncate/round-toward-zero divisions.
+            TOLERANCE = 8
+            golden_ok  = abs(hw_signed - g_signed) <= TOLERANCE
+            sample_pass = golden_ok
             if not sample_pass:
                 pass_all = False
 
@@ -381,7 +442,7 @@ def test_filter(ser):
                   f" {hw_val:>5} (0x{hw_val:03X}) "
                   f" [{status_str}]")
         else:
-            print(f"{idx+1:>6} {sample_12b:>8}   --- read/write error ---      [FAIL]")
+            print(f"{idx+1:>6} {sample_12b:>8}   --- read error ---      [FAIL]")
             pass_all = False
             per_sample.append({'input': sample_12b, 'golden': g_out, 'hw': None, 'ok': False})
 
@@ -418,13 +479,11 @@ def test_filter(ser):
     print(f"  FILTER CHAIN SUMMARY:  {pass_cnt}/{len(per_sample)} PASSED")
     print("=" * 56)
     if pass_all:
-        print("  [+] FILTER TEST PASS: All AHB transactions completed successfully.")
-        print("  [+] Filter slave is reachable and FIFO mechanics are operational.")
-        print("  [i] Golden model delta reflects RTL's lpf_voted_out open-wire issue")
-        print("      (fec_dout always 0).  Fix RTL to compare actual filter outputs.")
+        print("  [+] FILTER TEST PASS: All outputs match golden model (\u00b18 LSB).")
+        print("  [+] Filter pipeline is correctly connected and producing valid data.")
     else:
-        print("  [-] FILTER TEST FAIL: One or more AHB transactions failed.")
-        print("  [-] Check: serial connection, filter enabled, FPGA programmed.")
+        print("  [-] FILTER TEST FAIL: One or more outputs deviate from golden model.")
+        print("  [-] Check: filter enabled? Bitstream up to date? Serial connection OK?")
     print("=" * 56)
 
 def test_aes(ser):
@@ -494,58 +553,297 @@ def test_aes(ser):
     else:
         print("[-] AES Encrypt/Decrypt Test FAIL (decrypted does not match original)")
 
+def _stress_traffic(ser, duration_sec, label):
+    """
+    Maximum-intensity AHB traffic targeting all 4 slaves simultaneously.
+    Alternates checkerboard patterns (0xAAAA5555 / 0x55555AAA) every op to
+    maximise flip-flop toggle rate (= maximum dynamic power).
+    Hits: RAM1, RAM2, Filter (data-in), AES (plaintext + trigger), RAM1 read.
+    Prints a live countdown every 5 seconds.
+    Returns total operation count.
+    """
+    # Alternating high-toggle patterns
+    PATTERNS = [0xAAAA5555, 0x55555AAA, 0xFFFF0000, 0x0000FFFF,
+                0xA5A5A5A5, 0x5A5A5A5A, 0xDEADBEEF, 0x12345678]
+
+    # Pre-load AES key once (stays loaded during entire phase)
+    for i in range(4):
+        ahb_write(ser, ADDR_AES + (i * 4), 0xDEADBEEF)
+
+    ops       = 0
+    pat_idx   = 0
+    start     = time.time()
+    last_print = start
+    next_milestone = 5
+
+    print(f"\n[*] Stressing ALL slaves for {duration_sec}s  [{label}]")
+    print(f"    Slaves: RAM1 + RAM2 + Filter + AES")
+    print(f"    Pattern: alternating 0xAAAA5555/0x55555AAA (max toggle rate)")
+
+    while True:
+        elapsed = time.time() - start
+        if elapsed >= duration_sec:
+            break
+
+        pat = PATTERNS[pat_idx % len(PATTERNS)]
+        pat_idx += 1
+
+        # --- RAM1: write + read (back-to-back, keeps bus fully busy) ---
+        ahb_write(ser, ADDR_RAM1,           pat)
+        ahb_write(ser, ADDR_RAM1 + 0x04,    ~pat & 0xFFFFFFFF)
+        ahb_read(ser,  ADDR_RAM1)
+
+        # --- RAM2: write (different address to toggle address lines too) ---
+        ahb_write(ser, ADDR_RAM2,           ~pat & 0xFFFFFFFF)
+        ahb_write(ser, ADDR_RAM2 + 0x04,    pat)
+
+        # --- Filter: push a new sample (12-bit, alternating hi/lo) ---
+        filter_sample = 0x7FF if (pat_idx % 2 == 0) else 0x800
+        ahb_write(ser, ADDR_FILTER,         filter_sample)
+
+        # --- AES: write plaintext + fire trigger (keeps AES core toggling) ---
+        ahb_write(ser, ADDR_AES + 0x10,     pat)
+        ahb_write(ser, ADDR_AES + 0x14,     ~pat & 0xFFFFFFFF)
+        ahb_write(ser, ADDR_AES + 0x20,     0x1)   # start encryption
+
+        ops += 9  # 9 AHB transactions per loop iteration
+
+        # Idle gap: with cg_enable=1 all hsel signals go LOW here,
+        # so BUFGCE gates all 4 slave clocks OFF for the full 5ms.
+        # With cg_enable=0 the clocks keep running — this is where
+        # the measurable power difference actually comes from.
+        # 5ms = 500,000 clock cycles at 100MHz — enough for gating to matter,
+        # short enough to avoid UART serial timeout (1s).
+        time.sleep(0.005)
+
+        # Live countdown every 5 seconds
+        now = time.time()
+        if now - last_print >= 5:
+            remaining = int(duration_sec - elapsed)
+            ops_per_sec = ops / elapsed if elapsed > 0 else 0
+            print(f"    [{remaining:3d}s remaining]  ops so far: {ops:,}  (~{ops_per_sec:.0f} ops/s)")
+            last_print = now
+
+    total_time = time.time() - start
+    print(f"[+] Phase complete: {ops:,} total AHB ops in {total_time:.1f}s  "
+          f"({ops/total_time:.0f} ops/s)")
+    return ops
+
+
 def power_analysis_loop(ser):
-    print("\n==================================================")
-    print("       POWER CONSUMPTION ANALYSIS MODE")
-    print("==================================================")
-    print("This mode runs a high-traffic loop to stress the bus.")
-    print("You can measure the FPGA power (current) during the loops.")
-    
-    # 1. Disable Clock Gating
-    print("\n[STEP 1] Disabling Clock Gating (High Power Mode)...")
-    ahb_write(ser, ADDR_SYS, 0)
-    input(">>> Press ENTER to start traffic loop (Gating OFF)...")
-    print("[*] Running traffic for 10 seconds...")
-    start_time = time.time()
-    ops = 0
-    while time.time() - start_time < 10:
-        ahb_write(ser, ADDR_RAM1, 0xAAAA5555)
-        ahb_read(ser, ADDR_RAM1)
-        ahb_write(ser, ADDR_FILTER, 0x123)
-        ahb_read(ser, ADDR_FILTER)
-        ops += 1
-    print(f"[+] Done. Operations performed: {ops}")
-    # Prompt for measured power
-    power_high = input("Enter measured power (High Power Mode, mW): ")
-    
-    # 2. Enable Clock Gating
-    print("\n[STEP 2] Enabling Clock Gating (Low Power Mode)...")
-    ahb_write(ser, ADDR_SYS, 1)
-    input(">>> Press ENTER to start traffic loop (Gating ON)...")
-    print("[*] Running traffic for 10 seconds...")
-    start_time = time.time()
-    ops = 0
-    while time.time() - start_time < 10:
-        ahb_write(ser, ADDR_RAM1, 0xAAAA5555)
-        ahb_read(ser, ADDR_RAM1)
-        ahb_write(ser, ADDR_FILTER, 0x123)
-        ahb_read(ser, ADDR_FILTER)
-        ops += 1
-    print(f"[+] Done. Operations performed: {ops}")
-    power_low = input("Enter measured power (Low Power Mode, mW): ")
-    
-    # Comparison
-    try:
-        power_high = float(power_high)
-        power_low = float(power_low)
-        diff = power_high - power_low
-        percent = (diff / power_high) * 100 if power_high else 0
-        print(f"\n[*] Power Comparison:")
-        print(f"    High Power Mode: {power_high:.2f} mW")
-        print(f"    Low Power Mode:  {power_low:.2f} mW")
-        print(f"    Power Saved:     {diff:.2f} mW ({percent:.1f}% reduction)")
-    except ValueError:
-        print("[-] Invalid input for power values. Comparison skipped.")
+    WARMUP_SEC  = 30    # seconds to let board reach steady state (not measured)
+    TRAFFIC_SEC = 600   # 10 minutes per phase
+
+    print("\n" + "=" * 60)
+    print("   POWER COMPARISON  (Clock Gating OFF vs ON)")
+    print("   Read the mAh value on your USB meter after each phase.")
+    print("=" * 60)
+    print(f"  Warmup  : {WARMUP_SEC}s per phase  (board stabilises — reset meter after)")
+    print(f"  Traffic : {TRAFFIC_SEC}s per phase  (note mAh before & after)")
+    print(f"  Targets : RAM1 + RAM2 + Filter + AES (max switching activity)")
+    print("=" * 60)
+
+    ops_results = {}
+
+    # Run both orderings to cancel thermal drift bias:
+    #   Run A: OFF first, ON second  (board heats up between phases)
+    #   Run B: ON first, OFF second  (reverse order)
+    # Average the two to get a thermally-balanced comparison.
+    # Here we run ONE ordering per invocation — alternate manually,
+    # or set REVERSE_ORDER = True for the second run.
+    REVERSE_ORDER = True    # ON first (cold board), OFF second
+
+    phase_order = [
+        ("Clock Gating OFF  [High Power]", 0),
+        ("Clock Gating ON   [Low Power]",  1)
+    ]
+    if REVERSE_ORDER:
+        phase_order = list(reversed(phase_order))
+
+    for phase, (label, cg_val) in enumerate(phase_order):
+        print(f"\n{'='*60}")
+        print(f"  PHASE {phase+1}: {label}")
+        print(f"{'='*60}")
+
+        # Apply clock gating setting
+        ahb_write(ser, ADDR_SYS, cg_val)
+        readback = ahb_read(ser, ADDR_SYS)
+        if readback is not None:
+            print(f"[*] ADDR_SYS readback: 0x{readback:08X}  "
+                  f"(cg_enable bit = {readback & 1})")
+        else:
+            print("[!] Could not read ADDR_SYS")
+
+        input(f"\n>>> Press ENTER to start {WARMUP_SEC}s warmup for Phase {phase+1} ...")
+
+        # Warmup — do not read meter yet
+        print(f"[*] Warmup running ({WARMUP_SEC}s) — do NOT read meter yet...")
+        _stress_traffic(ser, WARMUP_SEC, f"WARMUP  {label}")
+        print(f"[*] Warmup done — NOTE or RESET the mAh counter on your meter now.")
+
+        input(f">>> Press ENTER to start the {TRAFFIC_SEC}s measurement window ...")
+
+        # Measurement window
+        print(f"[*] Running {TRAFFIC_SEC}s stress traffic — watch the mAh accumulate...")
+        ops = _stress_traffic(ser, TRAFFIC_SEC, f"MEASURE {label}")
+        ops_results[phase] = ops
+
+        print(f"\n[*] Phase {phase+1} done — READ the mAh value on your meter now.")
+        print(f"[*]   delta mAh = (reading now) - (reading before traffic started)")
+        print(f"[*]   AHB ops this phase: {ops:,}")
+
+    # ---------------------------------------------------------------
+    # Final reminder — user compares meter readings manually
+    # ---------------------------------------------------------------
+    print(f"\n{'='*60}")
+    print(f"  BOTH PHASES COMPLETE")
+    print(f"{'='*60}")
+    print(f"  Compare the two mAh deltas you observed on your USB meter:")
+    print()
+    print(f"  Phase 1 (Gating OFF) — higher mAh = more charge = more power")
+    print(f"  Phase 2 (Gating ON)  — lower mAh  = less charge = power saved")
+    print()
+    print(f"  To calculate from your mAh values (USB @ 5V, {TRAFFIC_SEC}s window):")
+    print(f"    Energy  (mWh) = delta_mAh x 5")
+    print(f"    Avg Pwr (mW)  = delta_mAh x 5 x 60   [= mWh / ({TRAFFIC_SEC}s/3600)]")
+    print(f"    Savings (%)   = (mAh_OFF - mAh_ON) / mAh_OFF x 100")
+    print()
+    print(f"  Phase 1 AHB ops : {ops_results.get(0, 0):,}")
+    print(f"  Phase 2 AHB ops : {ops_results.get(1, 0):,}")
+    print(f"{'='*60}")
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+def power_analysis_idle(ser):
+    """
+    Idle-dominant test: maximises clock gating savings.
+
+    Pattern per iteration:
+      1. Fire a tiny AHB burst (4 writes across all slaves) — ~4ms UART time
+      2. Sleep IDLE_SEC (all hsel=0 → BUFGCE freezes all slave clocks if cg_enable=1)
+
+    With cg_enable=0: slave clock trees toggle at 100 MHz during the entire idle window.
+    With cg_enable=1: slave clock trees are frozen during the entire idle window → maximum savings.
+
+    Idle fraction = IDLE_SEC / (IDLE_SEC + ~0.004s) ≈ 99% at IDLE_SEC=0.5s
+    This is the worst-case scenario for gating OFF and best-case for gating ON.
+    """
+    WARMUP_SEC   = 30     # warmup before each measurement (not counted)
+    TRAFFIC_SEC  = 600    # 10-minute measurement window per phase
+    IDLE_SEC     = 0.5    # idle gap between bursts (500ms = 50,000,000 clock cycles frozen)
+    REVERSE_ORDER = False  # set True for second run (thermally balanced)
+
+    print("\n" + "=" * 60)
+    print("   IDLE-DOMINANT POWER COMPARISON (max clock gating savings)")
+    print("=" * 60)
+    print(f"  Pattern   : 4-op burst → {IDLE_SEC*1000:.0f}ms idle → repeat")
+    print(f"  Idle frac : ~{100*IDLE_SEC/(IDLE_SEC+0.004):.0f}%  (clocks frozen this % of the time)")
+    print(f"  Window    : {TRAFFIC_SEC}s per phase  |  Warmup: {WARMUP_SEC}s")
+    print(f"  Expected  : Gating ON should show LOWER mAh than Gating OFF")
+    print("=" * 60)
+
+    phase_order = [
+        ("Clock Gating OFF  [High Power]", 0),
+        ("Clock Gating ON   [Low Power]",  1),
+    ]
+    if REVERSE_ORDER:
+        phase_order = list(reversed(phase_order))
+
+    ops_results = {}
+
+    for phase, (label, cg_val) in enumerate(phase_order):
+        print(f"\n{'='*60}")
+        print(f"  PHASE {phase+1}: {label}")
+        print(f"{'='*60}")
+
+        # Apply clock gating setting
+        ahb_write(ser, ADDR_SYS, cg_val)
+        readback = ahb_read(ser, ADDR_SYS)
+        if readback is not None:
+            print(f"[*] ADDR_SYS readback: 0x{readback:08X}  "
+                  f"(cg_enable bit = {readback & 1})")
+        else:
+            print("[!] Could not read ADDR_SYS")
+
+        input(f"\n>>> Press ENTER to start {WARMUP_SEC}s warmup for Phase {phase+1} ...")
+
+        # Warmup — same idle pattern, not measured
+        print(f"[*] Warmup running ({WARMUP_SEC}s) — do NOT read meter yet...")
+        w_start = time.time()
+        while time.time() - w_start < WARMUP_SEC:
+            ahb_write(ser, ADDR_RAM1,   0xAAAA5555)
+            ahb_write(ser, ADDR_RAM2,   0x5555AAAA)
+            ahb_write(ser, ADDR_FILTER, 0x7FF)
+            ahb_write(ser, ADDR_AES + 0x10, 0xDEADBEEF)
+            time.sleep(IDLE_SEC)
+        print(f"[*] Warmup done — RESET the mAh counter on your meter now.")
+
+        input(f">>> Press ENTER to start the {TRAFFIC_SEC}s measurement window ...")
+
+        # Measurement window — idle-dominant pattern
+        print(f"[*] Running {TRAFFIC_SEC}s idle-dominant traffic...")
+        print(f"[*] Each iteration: 4 AHB writes then {IDLE_SEC*1000:.0f}ms idle")
+        print(f"[*] Gating ON  → clocks frozen {IDLE_SEC*1000:.0f}ms per iteration")
+        print(f"[*] Gating OFF → clocks toggling at 100MHz during idle")
+
+        ops      = 0
+        start    = time.time()
+        last_print = start
+        PATTERNS = [0xAAAA5555, 0x55555AAA, 0xFFFF0000, 0x0000FFFF]
+        idx      = 0
+
+        while True:
+            elapsed = time.time() - start
+            if elapsed >= TRAFFIC_SEC:
+                break
+
+            pat = PATTERNS[idx % len(PATTERNS)]
+            idx += 1
+
+            # Minimal burst: touch each slave once to prove bus is alive
+            ahb_write(ser, ADDR_RAM1,        pat)
+            ahb_write(ser, ADDR_RAM2,        ~pat & 0xFFFFFFFF)
+            ahb_write(ser, ADDR_FILTER,      0x7FF if idx % 2 == 0 else 0x800)
+            ahb_write(ser, ADDR_AES + 0x10,  pat)
+            ops += 4
+
+            # Long idle — THIS is where the savings come from
+            time.sleep(IDLE_SEC)
+
+            # Live countdown every 30 seconds
+            if time.time() - last_print >= 30:
+                remaining = int(TRAFFIC_SEC - elapsed)
+                print(f"    [{remaining:3d}s remaining]  iterations: {idx}  ops: {ops:,}")
+                last_print = time.time()
+
+        ops_results[phase] = ops
+        total_time = time.time() - start
+        print(f"[+] Phase {phase+1} done: {ops:,} ops in {total_time:.1f}s  "
+              f"({ops/total_time:.1f} ops/s)")
+        print(f"\n[*] Phase {phase+1} complete — READ and NOTE the mAh on your meter now.")
+        print(f"[*]   delta mAh = (reading now) - (reading when traffic started)")
+
+    # ---------------------------------------------------------------
+    # Final summary
+    # ---------------------------------------------------------------
+    print(f"\n{'='*60}")
+    print(f"  IDLE-DOMINANT TEST COMPLETE")
+    print(f"{'='*60}")
+    print(f"  With ~{100*IDLE_SEC/(IDLE_SEC+0.004):.0f}% idle fraction:")
+    print(f"    Gating ON  should have LOWER mAh  (clocks frozen during idle)")
+    print(f"    Gating OFF should have HIGHER mAh (clocks run during idle)")
+    print()
+    print(f"  To calculate from your mAh readings (USB @ 5V, {TRAFFIC_SEC}s):")
+    print(f"    Energy (mWh) = delta_mAh x 5")
+    print(f"    Avg Pwr (mW) = delta_mAh x 5 x 6   [mWh / (600s/3600)]")
+    print(f"    Savings (%)  = (mAh_OFF - mAh_ON) / mAh_OFF x 100")
+    print()
+    print(f"  Phase 1 AHB ops : {ops_results.get(0, 0):,}")
+    print(f"  Phase 2 AHB ops : {ops_results.get(1, 0):,}")
+    print(f"  (ops should be equal — any difference = UART timeouts)")
+    print(f"{'='*60}")
+
 
 # ==============================================================================
 # MAIN
@@ -558,11 +856,12 @@ if __name__ == "__main__":
             print("1. Test RAM")
             print("2. Test Filter Chain")
             print("3. Test AES")
-            print("4. Run Power Analysis Comparison")
-            print("5. Exit")
-            
+            print("4. Run Power Analysis (stress traffic)")
+            print("5. Run Power Analysis (idle-dominant, max gating savings)")
+            print("6. Exit")
+
             choice = input("Select: ")
-            
+
             if choice == '1':
                 test_ram(ser)
             elif choice == '2':
@@ -572,6 +871,8 @@ if __name__ == "__main__":
             elif choice == '4':
                 power_analysis_loop(ser)
             elif choice == '5':
+                power_analysis_idle(ser)
+            elif choice == '6':
                 ser.close()
                 break
             else:

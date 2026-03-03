@@ -64,21 +64,30 @@ module fpga_top (
     assign hsel_sys = (haddr[31:16] == 16'hE000);
 
     // System Control Register (Clock Gating Enable)
+    // Write bit[0]=1 to ADDR_SYS (0xE000_0000) to enable clock gating
+    // Write bit[0]=0 to disable clock gating (full power mode)
     reg cg_enable;
     always @(posedge hclk or negedge hresetn) begin
         if (!hresetn)
-            cg_enable <= 0;  // Reset: clock gating disabled
-        else
-            cg_enable <= 0;  // Clock gating always disabled
+            cg_enable <= 0;          // Reset: clock gating disabled
+        else if (hsel_sys && hwrite && htrans[1])
+            cg_enable <= hwdata[0];  // Capture AHB write to ADDR_SYS
     end
 
-    // Clock Gating Logic
-    // Gate clock if: CG Enabled AND Slave Not Selected AND Slave Ready (Idle)
-        // Clock gating disabled: clocks always ON
-        wire clk_s1 = hclk;
-        wire clk_s2 = hclk;
-        wire clk_s3 = hclk;
-        wire clk_s4 = hclk;
+    // Clock Gating Logic (FPGA-safe: use BUFGCE Xilinx primitive)
+    // When cg_enable=1: slave clock is gated OFF when that slave is not selected.
+    // When cg_enable=0: all slave clocks run continuously (full power mode).
+    wire gate_s1, gate_s2, gate_s3, gate_s4;
+    assign gate_s1 = ~cg_enable | hsel_s1;
+    assign gate_s2 = ~cg_enable | hsel_s2;
+    assign gate_s3 = ~cg_enable | hsel_s3;
+    assign gate_s4 = ~cg_enable | hsel_s4;
+
+    wire clk_s1, clk_s2, clk_s3, clk_s4;
+    BUFGCE u_cg_s1 (.I(hclk), .CE(gate_s1), .O(clk_s1));
+    BUFGCE u_cg_s2 (.I(hclk), .CE(gate_s2), .O(clk_s2));
+    BUFGCE u_cg_s3 (.I(hclk), .CE(gate_s3), .O(clk_s3));
+    BUFGCE u_cg_s4 (.I(hclk), .CE(gate_s4), .O(clk_s4));
 
     // Muxing Read Data
     reg [31:0] mux_hrdata;
