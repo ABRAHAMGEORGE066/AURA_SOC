@@ -7,7 +7,7 @@ import random
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
-SERIAL_PORT = 'COM5'  # Change this to your Basys 3 COM port
+SERIAL_PORT = 'COM11'  # Change this to your Basys 3 COM port
 BAUD_RATE = 115200
 TIMEOUT = 1
 
@@ -682,8 +682,8 @@ def power_analysis_loop(ser):
     REVERSE_ORDER = True    # ON first (cold board), OFF second
 
     phase_order = [
-        ("Clock Gating OFF  [High Power]", 0),
-        ("Clock Gating ON   [Low Power]",  1)
+        ("Clock Gating ON   [Low Power]",  0),
+        ("Clock Gating OFF  [High Power]", 1)
     ]
     if REVERSE_ORDER:
         phase_order = list(reversed(phase_order))
@@ -772,8 +772,8 @@ def power_analysis_idle(ser):
     print("=" * 60)
 
     phase_order = [
-        ("Clock Gating OFF  [High Power]", 0),
-        ("Clock Gating ON   [Low Power]",  1),
+        ("Clock Gating ON   [Low Power]",  0),
+        ("Clock Gating OFF  [High Power]", 1),
     ]
     if REVERSE_ORDER:
         phase_order = list(reversed(phase_order))
