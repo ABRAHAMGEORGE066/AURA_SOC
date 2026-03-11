@@ -3,6 +3,9 @@ import serial.tools.list_ports
 import time
 import struct
 import random
+import json
+import sys
+import argparse
 
 # ==============================================================================
 # CONFIGURATION
@@ -22,8 +25,34 @@ ADDR_SYS    = 0xE0000000
 ADDR_FILTER_OUT    = ADDR_FILTER + 0x04  # DATA_OUT  (read-only): pop filtered result from output FIFO
 ADDR_FILTER_CTRL   = ADDR_FILTER + 0x08  # CONTROL   (R/W)     : bit0=FILTER_ENABLE, bit1=BYPASS
 ADDR_FILTER_STATUS = ADDR_FILTER + 0x0C  # STATUS    (R)       : [11:8]=in_cnt, [3:0]=out_cnt
-# NOTE: addresses 0x20-0x28 are FIR coefficient registers, 0x2C-0x38 are FEC registers.
-# The filter does NOT expose per-stage debug outputs as memory-mapped registers.
+# NOTE: addresses 0x10-0x28 are FIR coefficient registers (COEFF[0..6]).
+
+# FEC registers (ahb_filter_slave.v 0x2C-0x38)
+ADDR_FEC_CTRL      = ADDR_FILTER + 0x2C  # FEC_CONTROL  (R/W): bit0=err_inject_en, bits[5:1]=err_bit
+ADDR_FEC_STATUS    = ADDR_FILTER + 0x30  # FEC_STATUS   (R)  : bit0=err_detected, bit1=err_corrected
+ADDR_FEC_SYN       = ADDR_FILTER + 0x34  # FEC_SYNDROME (R)  : [4:0] last syndrome value
+ADDR_FEC_ERRCNT    = ADDR_FILTER + 0x38  # FEC_ERR_CNT  (R)  : cumulative corrected error count
+
+# DC-offset TMR registers (0x40-0x48)
+ADDR_DCTMR_STATUS  = ADDR_FILTER + 0x40  # DC_TMR_STATUS  (R)  : bit0=mismatch, [3:1]=err_ab/bc/ac
+ADDR_DCTMR_ERRCNT  = ADDR_FILTER + 0x44  # DC_TMR_ERR_CNT (R)  : cumulative DC-offset TMR mismatches
+ADDR_DCTMR_CTRL    = ADDR_FILTER + 0x48  # DC_TMR_CONTROL (R/W): bit0=inject_b, bit1=inject_c
+
+# LPF TMR registers (0x50-0x58)
+ADDR_LPF_TMR_STATUS  = ADDR_FILTER + 0x50  # LPF_TMR_STATUS  (R)  : bit0=mismatch, [3:1]=err_ab/bc/ac
+ADDR_LPF_TMR_ERRCNT  = ADDR_FILTER + 0x54  # LPF_TMR_ERR_CNT (R)  : cumulative LPF TMR mismatches
+ADDR_LPF_TMR_CTRL    = ADDR_FILTER + 0x58  # LPF_TMR_CONTROL (R/W): bit0=inject_b, bit1=inject_c
+
+# Glitch-filter TMR registers (0x60-0x68)
+ADDR_GLITCH_TMR_STATUS  = ADDR_FILTER + 0x60  # GLITCH_TMR_STATUS  (R)  : bit0=mismatch, [3:1]=err_ab/bc/ac
+ADDR_GLITCH_TMR_ERRCNT  = ADDR_FILTER + 0x64  # GLITCH_TMR_ERR_CNT (R)  : cumulative Glitch TMR mismatches
+ADDR_GLITCH_TMR_CTRL    = ADDR_FILTER + 0x68  # GLITCH_TMR_CONTROL (R/W): bit0=inject_b, bit1=inject_c
+
+# Watchdog registers — routed through ahb_filter_slave I/O ports (0x70-0x7C)
+ADDR_WDG_STATUS      = ADDR_FILTER + 0x70  # WDG_STATUS      (R)  : [3:0] sticky timeout flags
+ADDR_WDG_FAULT_CNT   = ADDR_FILTER + 0x74  # WDG_FAULT_CNT   (R)  : cumulative watchdog events
+ADDR_WDG_FORCE_RST   = ADDR_FILTER + 0x78  # WDG_FORCE_RST   (R/W): write bit N → force-reset slave N+1
+ADDR_WDG_TIMEOUT_CFG = ADDR_FILTER + 0x7C  # WDG_TIMEOUT_CFG (R/W): [7:0] threshold (0=disabled)
 
 # ==============================================================================
 # FILTER GOLDEN MODEL
@@ -874,9 +903,553 @@ def power_analysis_idle(ser):
 
 
 # ==============================================================================
+# BIST HELPERS
+# ==============================================================================
+
+# Per-stage address table: (STATUS_addr, ERRCNT_addr, CTRL_addr, display_name)
+_TMR_STAGE_MAP = {
+    'DC':     (ADDR_DCTMR_STATUS,       ADDR_DCTMR_ERRCNT,       ADDR_DCTMR_CTRL,       'DC-Offset'),
+    'LPF':    (ADDR_LPF_TMR_STATUS,     ADDR_LPF_TMR_ERRCNT,     ADDR_LPF_TMR_CTRL,     'LPF'),
+    'GLITCH': (ADDR_GLITCH_TMR_STATUS,  ADDR_GLITCH_TMR_ERRCNT,  ADDR_GLITCH_TMR_CTRL,  'Glitch'),
+}
+
+
+def _bist_confirm(description):
+    """
+    Print a safety warning and require the user to type 'YES' to proceed.
+    Returns True if confirmed, False if declined.
+    """
+    print(f"\n[!] BIST SAFETY INTERLOCK")
+    print(f"    {description}")
+    print(f"    This test injects faults / forces resets into live hardware.")
+    answer = input("    Type YES to continue, anything else to skip: ").strip()
+    if answer != 'YES':
+        print("[*] BIST skipped by user.")
+        return False
+    return True
+
+
+def _safe_read(ser, addr, retries=3):
+    """Read with up to `retries` attempts; returns None on repeated failure."""
+    for attempt in range(retries):
+        val = ahb_read(ser, addr)
+        if val is not None:
+            return val
+        time.sleep(0.02)
+    return None
+
+
+def _safe_write(ser, addr, data, retries=3):
+    """Write with up to `retries` attempts; returns True on success."""
+    for attempt in range(retries):
+        if ahb_write(ser, addr, data):
+            return True
+        time.sleep(0.02)
+    return False
+
+
+# ==============================================================================
+# TMR BIST
+# ==============================================================================
+
+def test_tmr_bist(ser, stage='DC'):
+    """
+    Test the TMR voter for a given filter stage by injecting replica faults
+    and verifying that the STATUS register reports a mismatch and that the
+    error counter increments.
+
+    stage: one of 'DC', 'LPF', or 'GLITCH'.
+
+    Returns a dict:
+        {
+          'stage': str,
+          'modes': [ {'inject': str, 'mismatch_seen': bool, 'errcnt_delta': int}, ... ],
+          'overall': 'PASS' | 'FAIL'
+        }
+    """
+    stage = stage.upper()
+    if stage not in _TMR_STAGE_MAP:
+        print(f"[-] Unknown TMR stage '{stage}'.  Choose from: {list(_TMR_STAGE_MAP)}")
+        return None
+
+    addr_status, addr_errcnt, addr_ctrl, label = _TMR_STAGE_MAP[stage]
+
+    print(f"\n{'='*60}")
+    print(f"  TMR BIST — {label} Stage")
+    print(f"{'='*60}")
+
+    if not _bist_confirm(f"TMR BIST will inject single-replica faults into the {label} TMR stage."):
+        return None
+
+    # Ensure filter is enabled before injection
+    _safe_write(ser, ADDR_FILTER_CTRL, 0x1)
+    time.sleep(0.01)
+
+    results = []
+    overall_pass = True
+
+    # Injection modes: (ctrl_word, description)
+    injection_modes = [
+        (0x1, 'inject_B only'),
+        (0x2, 'inject_C only'),
+        (0x3, 'inject_B and C'),
+    ]
+
+    for ctrl_val, mode_label in injection_modes:
+        print(f"\n  [*] Mode: {mode_label}  (CTRL=0x{ctrl_val:02X})")
+
+        # Read baseline error count before injection
+        baseline = _safe_read(ser, addr_errcnt)
+        if baseline is None:
+            print(f"  [-] Could not read baseline ERRCNT — skipping mode.")
+            results.append({'inject': mode_label, 'mismatch_seen': False,
+                            'errcnt_delta': 0, 'pass': False})
+            overall_pass = False
+            continue
+
+        # Enable fault injection
+        if not _safe_write(ser, addr_ctrl, ctrl_val):
+            print(f"  [-] Could not write CTRL register — skipping mode.")
+            results.append({'inject': mode_label, 'mismatch_seen': False,
+                            'errcnt_delta': 0, 'pass': False})
+            overall_pass = False
+            continue
+
+        # Push samples through the pipeline so the TMR voter sees mismatches
+        for _ in range(4):
+            _safe_write(ser, ADDR_FILTER, 0x200)
+        time.sleep(0.05)
+
+        # Read STATUS and ERRCNT
+        status_val = _safe_read(ser, addr_status)
+        errcnt_val = _safe_read(ser, addr_errcnt)
+
+        mismatch_bit = bool(status_val & 0x1) if status_val is not None else False
+        errcnt_delta = (errcnt_val - baseline) if errcnt_val is not None else 0
+
+        mode_pass = mismatch_bit and (errcnt_delta > 0)
+
+        if status_val is not None:
+            print(f"      STATUS  = 0x{status_val:08X}  "
+                  f"(mismatch={'SET' if mismatch_bit else 'CLEAR'}, "
+                  f"err_ab={bool(status_val>>1&1)}, "
+                  f"err_bc={bool(status_val>>2&1)}, "
+                  f"err_ac={bool(status_val>>3&1)})")
+        else:
+            print(f"      STATUS  = READ FAILED")
+
+        if errcnt_val is not None:
+            print(f"      ERRCNT  = {errcnt_val}  (delta = {errcnt_delta})")
+        else:
+            print(f"      ERRCNT  = READ FAILED")
+
+        print(f"      Result  : {'[+] PASS' if mode_pass else '[-] FAIL'}"
+              f"  (mismatch={'seen' if mismatch_bit else 'NOT seen'}, "
+              f"cnt_delta={errcnt_delta})")
+
+        results.append({'inject': mode_label, 'mismatch_seen': mismatch_bit,
+                        'errcnt_delta': errcnt_delta, 'pass': mode_pass})
+        if not mode_pass:
+            overall_pass = False
+
+        # Clear injection before next mode (safety: always clear even on failure)
+        _safe_write(ser, addr_ctrl, 0x0)
+        time.sleep(0.02)
+
+        # Verify TMR STATUS clears (or at least mismatch bit drops)
+        clear_status = _safe_read(ser, addr_status)
+        if clear_status is not None:
+            print(f"      Post-clear STATUS = 0x{clear_status:08X}  "
+                  f"({'mismatch cleared' if not (clear_status & 1) else 'mismatch still set — may be sticky'})")
+
+    # Final summary
+    print(f"\n  {'='*54}")
+    print(f"  TMR BIST {label}: {'[+] PASS' if overall_pass else '[-] FAIL'}")
+    for r in results:
+        tag = '[+]' if r['pass'] else '[-]'
+        print(f"    {tag} {r['inject']:25s}  mismatch={r['mismatch_seen']}  delta={r['errcnt_delta']}")
+    print(f"  {'='*54}")
+
+    return {
+        'stage': stage,
+        'label': label,
+        'modes': results,
+        'overall': 'PASS' if overall_pass else 'FAIL',
+    }
+
+
+# ==============================================================================
+# FEC BIST
+# ==============================================================================
+
+def test_fec_bist(ser, sample=0x123, sweep=False):
+    """
+    Test the FEC encoder/decoder by injecting single-bit errors and verifying
+    that the decoder detects, corrects them, and reports the correct syndrome.
+
+    sample : 12-bit input sample written to the filter during injection.
+    sweep  : if True, test all bits 1-17 of the FEC codeword; otherwise spot-
+             check bit 5 only.
+
+    Returns a dict:
+        {
+          'bits_tested': int,
+          'bits_passed': int,
+          'failing_bits': [int, ...],
+          'overall': 'PASS' | 'FAIL'
+        }
+    """
+    print(f"\n{'='*60}")
+    print(f"  FEC BIST  ({'full sweep bits 1-17' if sweep else 'spot-check bit 5'})")
+    print(f"{'='*60}")
+
+    if not _bist_confirm("FEC BIST will inject single-bit codeword errors into the FEC pipeline."):
+        return None
+
+    # Ensure filter is active
+    _safe_write(ser, ADDR_FILTER_CTRL, 0x1)
+    time.sleep(0.01)
+
+    bits_to_test = list(range(1, 18)) if sweep else [5]
+    sample_12b   = sample & 0xFFF
+
+    bits_tested  = 0
+    bits_passed  = 0
+    failing_bits = []
+
+    for err_bit in bits_to_test:
+        bits_tested += 1
+
+        # Build CTRL word: bit0=err_inject_en, bits[5:1]=err_bit position
+        ctrl_word = 0x1 | ((err_bit & 0x1F) << 1)
+
+        # Arm injection
+        if not _safe_write(ser, ADDR_FEC_CTRL, ctrl_word):
+            print(f"  [-] Bit {err_bit:2d}: CTRL write failed — skip")
+            failing_bits.append(err_bit)
+            continue
+
+        # Push sample through pipeline
+        for _ in range(4):
+            _safe_write(ser, ADDR_FILTER, sample_12b)
+        time.sleep(0.05)
+
+        # Read FEC outputs
+        fec_status  = _safe_read(ser, ADDR_FEC_STATUS)
+        fec_syn     = _safe_read(ser, ADDR_FEC_SYN)
+        fec_errcnt  = _safe_read(ser, ADDR_FEC_ERRCNT)
+
+        err_detected  = bool(fec_status & 0x1) if fec_status is not None else False
+        err_corrected = bool(fec_status & 0x2) if fec_status is not None else False
+        syndrome      = (fec_syn & 0x1F)        if fec_syn    is not None else None
+
+        # Pass criteria: error detected, corrected, and syndrome matches injected bit position
+        bit_pass = err_detected and err_corrected and (syndrome == err_bit)
+
+        if sweep:
+            tag = '[+]' if bit_pass else '[-]'
+            syn_str = f"0x{syndrome:02X}={syndrome}" if syndrome is not None else "READ_ERR"
+            print(f"  {tag} bit={err_bit:2d}  detected={err_detected}  corrected={err_corrected}"
+                  f"  syndrome={syn_str}  {'PASS' if bit_pass else 'FAIL'}")
+        else:
+            # Detailed output for spot-check mode
+            print(f"\n  Injecting error at codeword bit {err_bit}:")
+            print(f"    FEC_STATUS  = 0x{fec_status:08X}  (detected={err_detected}, corrected={err_corrected})"
+                  if fec_status is not None else "    FEC_STATUS  = READ FAILED")
+            print(f"    FEC_SYNDROME= {syndrome}  (expected {err_bit})"
+                  if syndrome is not None else "    FEC_SYNDROME= READ FAILED")
+            print(f"    FEC_ERRCNT  = {fec_errcnt}"
+                  if fec_errcnt is not None else "    FEC_ERRCNT  = READ FAILED")
+            print(f"    Result      : {'[+] PASS' if bit_pass else '[-] FAIL'}")
+
+        if bit_pass:
+            bits_passed += 1
+        else:
+            failing_bits.append(err_bit)
+
+        # Clear injection after each bit
+        _safe_write(ser, ADDR_FEC_CTRL, 0x0)
+        time.sleep(0.02)
+
+    overall_pass = (len(failing_bits) == 0)
+    print(f"\n  {'='*54}")
+    print(f"  FEC BIST: {bits_passed}/{bits_tested} bits {'[+] PASS' if overall_pass else '[-] FAIL'}")
+    if failing_bits:
+        print(f"  Failing bit positions: {failing_bits}")
+    print(f"  {'='*54}")
+
+    return {
+        'bits_tested': bits_tested,
+        'bits_passed': bits_passed,
+        'failing_bits': failing_bits,
+        'overall': 'PASS' if overall_pass else 'FAIL',
+    }
+
+
+# ==============================================================================
+# WATCHDOG BIST
+# ==============================================================================
+
+def test_watchdog_bist(ser, slave_index=2):
+    """
+    Test the AHB watchdog by force-resetting a target slave and verifying that:
+      1. The sticky WDG_STATUS flag is set for that slave.
+      2. WDG_FAULT_CNT increments.
+      3. The slave recovers: its control register can be read/written after reset.
+
+    slave_index : 1-based slave number (1=RAM1, 2=RAM2, 3=Filter, 4=AES).
+                  Defaults to 2 (RAM2) — safest choice because RAM2 has no
+                  side-effects from being reset mid-test.
+
+    Returns a dict:
+        {
+          'slave': int,
+          'flag_set': bool,
+          'fault_cnt_delta': int,
+          'slave_recovered': bool,
+          'overall': 'PASS' | 'FAIL'
+        }
+    """
+    if slave_index < 1 or slave_index > 4:
+        print(f"[-] slave_index must be 1-4, got {slave_index}")
+        return None
+
+    print(f"\n{'='*60}")
+    print(f"  WATCHDOG BIST — force-reset slave {slave_index}")
+    print(f"{'='*60}")
+
+    if not _bist_confirm(
+        f"Watchdog BIST will force-reset AHB slave {slave_index}. "
+        f"In-flight transactions to that slave will be aborted."
+    ):
+        return None
+
+    # Baseline fault count
+    baseline_fault = _safe_read(ser, ADDR_WDG_FAULT_CNT)
+    if baseline_fault is None:
+        print("[-] Could not read WDG_FAULT_CNT baseline — aborting.")
+        return None
+
+    baseline_status = _safe_read(ser, ADDR_WDG_STATUS)
+    print(f"  [*] Baseline WDG_STATUS  = 0x{baseline_status:08X}" if baseline_status is not None
+          else "  [*] Baseline WDG_STATUS  = READ FAILED")
+    print(f"  [*] Baseline WDG_FAULT_CNT = {baseline_fault}")
+
+    # Write force-reset bit for target slave (bit N-1 → slave N)
+    force_mask = (1 << (slave_index - 1)) & 0xF
+    print(f"  [*] Writing WDG_FORCE_RST = 0x{force_mask:02X}  (bit {slave_index-1} → slave {slave_index})")
+    if not _safe_write(ser, ADDR_WDG_FORCE_RST, force_mask):
+        print("  [-] WDG_FORCE_RST write failed — aborting.")
+        return None
+
+    # Allow watchdog logic and slave reset to propagate (~20 ms at 100 MHz)
+    time.sleep(0.02)
+
+    # Read back watchdog registers
+    post_status    = _safe_read(ser, ADDR_WDG_STATUS)
+    post_fault_cnt = _safe_read(ser, ADDR_WDG_FAULT_CNT)
+
+    flag_set          = False
+    fault_cnt_delta   = 0
+    slave_recovered   = False
+
+    if post_status is not None:
+        flag_set = bool((post_status >> (slave_index - 1)) & 0x1)
+        print(f"  [*] Post-reset WDG_STATUS    = 0x{post_status:08X}  "
+              f"(slave {slave_index} sticky flag: {'SET' if flag_set else 'CLEAR'})")
+    else:
+        print("  [-] Post-reset WDG_STATUS read failed.")
+
+    if post_fault_cnt is not None:
+        fault_cnt_delta = post_fault_cnt - baseline_fault
+        print(f"  [*] Post-reset WDG_FAULT_CNT = {post_fault_cnt}  (delta = {fault_cnt_delta})")
+    else:
+        print("  [-] Post-reset WDG_FAULT_CNT read failed.")
+
+    # Verify slave recovery by reading/writing its control register
+    # Slave-to-address mapping for a basic control register read
+    _slave_ctrl_addr = {
+        1: ADDR_RAM1,
+        2: ADDR_RAM2,
+        3: ADDR_FILTER_CTRL,
+        4: ADDR_AES + 0x20,
+    }
+    ctrl_addr = _slave_ctrl_addr[slave_index]
+
+    print(f"\n  [*] Verifying slave {slave_index} recovery via control reg @ 0x{ctrl_addr:08X}")
+    time.sleep(0.01)
+
+    # Write a known value and read it back
+    probe_val = 0xAA55 if slave_index in (1, 2) else 0x1
+    if _safe_write(ser, ctrl_addr, probe_val):
+        readback = _safe_read(ser, ctrl_addr)
+        if readback is not None and (readback == probe_val or slave_index == 3):
+            # For filter slave, CONTROL readback may mask reserved bits; accept non-None
+            slave_recovered = True
+            print(f"  [+] Write 0x{probe_val:08X} → Readback 0x{readback:08X}  — slave is responding")
+        else:
+            print(f"  [-] Readback 0x{readback:08X} (expected 0x{probe_val:08X}) — slave may not have recovered"
+                  if readback is not None else "  [-] Readback failed — slave not responding")
+    else:
+        print("  [-] Control register write failed — slave not responding")
+
+    overall_pass = flag_set and (fault_cnt_delta > 0) and slave_recovered
+
+    print(f"\n  {'='*54}")
+    print(f"  WDG BIST slave {slave_index}: {'[+] PASS' if overall_pass else '[-] FAIL'}")
+    print(f"    flag_set={flag_set}  fault_cnt_delta={fault_cnt_delta}  slave_recovered={slave_recovered}")
+    print(f"  {'='*54}")
+
+    return {
+        'slave': slave_index,
+        'flag_set': flag_set,
+        'fault_cnt_delta': fault_cnt_delta,
+        'slave_recovered': slave_recovered,
+        'overall': 'PASS' if overall_pass else 'FAIL',
+    }
+
+
+# ==============================================================================
+# BIST SUITE ORCHESTRATOR
+# ==============================================================================
+
+def run_bist_suite(ser, report_file=None):
+    """
+    Run the full BIST suite in order:
+      1. TMR BIST for DC, LPF, and Glitch stages.
+      2. FEC BIST (spot-check; set sweep=True for exhaustive).
+      3. Watchdog BIST (slave 2 — RAM2, safe default).
+
+    Collects per-test results and prints a structured summary.
+    Optionally writes a JSON report to `report_file`.
+    """
+    print("\n" + "=" * 60)
+    print("  FPGA BIST SUITE")
+    print("=" * 60)
+    print("  This suite tests fault-injection and recovery mechanisms.")
+    print("  You will be prompted before each destructive sub-test.")
+    print("=" * 60)
+
+    report = {
+        'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S'),
+        'serial_port': SERIAL_PORT,
+        'tmr': {},
+        'fec': None,
+        'watchdog': None,
+    }
+
+    # ----------------------------------------------------------------
+    # 1. TMR BIST for all three stages
+    # ----------------------------------------------------------------
+    tmr_overall = True
+    for stage in ('DC', 'LPF', 'GLITCH'):
+        result = test_tmr_bist(ser, stage=stage)
+        if result is not None:
+            report['tmr'][stage] = result
+            if result['overall'] != 'PASS':
+                tmr_overall = False
+        else:
+            tmr_overall = False  # skipped = not passed
+
+    # ----------------------------------------------------------------
+    # 2. FEC BIST (spot-check by default; prompt for sweep)
+    # ----------------------------------------------------------------
+    sweep_ans = input("\n  Run full FEC bit sweep (bits 1-17)? [y/N]: ").strip().lower()
+    fec_result = test_fec_bist(ser, sweep=(sweep_ans == 'y'))
+    report['fec'] = fec_result
+
+    # ----------------------------------------------------------------
+    # 3. Watchdog BIST
+    # ----------------------------------------------------------------
+    slv_ans = input("\n  Watchdog BIST slave index [1-4, default=2]: ").strip()
+    try:
+        slv_idx = int(slv_ans) if slv_ans else 2
+    except ValueError:
+        slv_idx = 2
+    wdg_result = test_watchdog_bist(ser, slave_index=slv_idx)
+    report['watchdog'] = wdg_result
+
+    # ----------------------------------------------------------------
+    # Structured Summary
+    # ----------------------------------------------------------------
+    print("\n\n" + "=" * 60)
+    print("  BIST SUITE — FINAL SUMMARY")
+    print("=" * 60)
+
+    # TMR summary
+    print("\n  TMR (Triple-Modular Redundancy):")
+    for stage, res in report['tmr'].items():
+        if res:
+            tag = '[+]' if res['overall'] == 'PASS' else '[-]'
+            print(f"    {tag} {res.get('label', stage):10s}: {res['overall']}")
+            for m in res.get('modes', []):
+                m_tag = '[+]' if m['pass'] else '[-]'
+                print(f"         {m_tag} {m['inject']:25s}  mismatch={m['mismatch_seen']}  Δcnt={m['errcnt_delta']}")
+        else:
+            print(f"    [~] {stage:10s}: SKIPPED")
+
+    # FEC summary
+    print("\n  FEC (Forward Error Correction):")
+    if fec_result:
+        tag = '[+]' if fec_result['overall'] == 'PASS' else '[-]'
+        print(f"    {tag} Bits tested: {fec_result['bits_tested']}  "
+              f"Passed: {fec_result['bits_passed']}  "
+              f"Failed: {len(fec_result['failing_bits'])}")
+        if fec_result['failing_bits']:
+            print(f"    [-] Failing positions: {fec_result['failing_bits']}")
+    else:
+        print("    [~] SKIPPED")
+
+    # Watchdog summary
+    print("\n  Watchdog:")
+    if wdg_result:
+        tag = '[+]' if wdg_result['overall'] == 'PASS' else '[-]'
+        print(f"    {tag} Slave {wdg_result['slave']}:  "
+              f"flag_set={wdg_result['flag_set']}  "
+              f"fault_cnt_delta={wdg_result['fault_cnt_delta']}  "
+              f"recovered={wdg_result['slave_recovered']}")
+    else:
+        print("    [~] SKIPPED")
+
+    # Overall verdict
+    fec_pass  = (fec_result  is not None and fec_result['overall']  == 'PASS')
+    wdg_pass  = (wdg_result  is not None and wdg_result['overall']  == 'PASS')
+    suite_pass = tmr_overall and fec_pass and wdg_pass
+
+    print(f"\n  {'='*56}")
+    print(f"  BIST SUITE RESULT: {'[+] ALL PASS' if suite_pass else '[-] ONE OR MORE FAILURES'}")
+    print(f"  {'='*56}")
+
+    # ----------------------------------------------------------------
+    # Optional JSON report
+    # ----------------------------------------------------------------
+    if report_file is not None:
+        # Ensure every result object is JSON-serialisable (convert booleans etc.)
+        try:
+            with open(report_file, 'w') as f:
+                json.dump(report, f, indent=2, default=str)
+            print(f"\n  [+] JSON report written to: {report_file}")
+        except OSError as e:
+            print(f"\n  [-] Could not write report file: {e}")
+
+    return report
+
+
+# ==============================================================================
 # MAIN
 # ==============================================================================
 if __name__ == "__main__":
+    # Allow CLI override of the serial port: python amba_test_script.py COM3
+    _parser = argparse.ArgumentParser(description='AMBA AES Filter FPGA test script')
+    _parser.add_argument('port', nargs='?', default=None,
+                         help='Serial port to use (e.g. COM3 or /dev/ttyUSB0). '
+                              'Overrides the SERIAL_PORT constant in this file.')
+    _parser.add_argument('--report', default=None,
+                         help='Path for JSON BIST report file (default: no file written)')
+    _args = _parser.parse_args()
+    if _args.port:
+        SERIAL_PORT = _args.port
+
     ser = open_serial()
     if ser:
         while True:
@@ -886,9 +1459,15 @@ if __name__ == "__main__":
             print("3. Test AES")
             print("4. Run Power Analysis (stress traffic)")
             print("5. Run Power Analysis (idle-dominant, max gating savings)")
-            print("6. Exit")
+            print("6. BIST — TMR (DC stage)")
+            print("7. BIST — TMR (LPF stage)")
+            print("8. BIST — TMR (Glitch stage)")
+            print("9. BIST — FEC")
+            print("A. BIST — Watchdog")
+            print("B. BIST — Full Suite")
+            print("X. Exit")
 
-            choice = input("Select: ")
+            choice = input("Select: ").strip().upper()
 
             if choice == '1':
                 test_ram(ser)
@@ -901,6 +1480,24 @@ if __name__ == "__main__":
             elif choice == '5':
                 power_analysis_idle(ser)
             elif choice == '6':
+                test_tmr_bist(ser, stage='DC')
+            elif choice == '7':
+                test_tmr_bist(ser, stage='LPF')
+            elif choice == '8':
+                test_tmr_bist(ser, stage='GLITCH')
+            elif choice == '9':
+                sw = input("  Full sweep (bits 1-17)? [y/N]: ").strip().lower()
+                test_fec_bist(ser, sweep=(sw == 'y'))
+            elif choice == 'A':
+                si = input("  Slave index [1-4, default=2]: ").strip()
+                try:
+                    si = int(si) if si else 2
+                except ValueError:
+                    si = 2
+                test_watchdog_bist(ser, slave_index=si)
+            elif choice == 'B':
+                run_bist_suite(ser, report_file=_args.report)
+            elif choice in ('X', '6'):
                 ser.close()
                 break
             else:
