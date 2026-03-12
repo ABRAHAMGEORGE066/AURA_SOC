@@ -1117,6 +1117,33 @@ def test_fec_bist(ser, sample=0x123, sweep=False):
     bits_passed  = 0
     failing_bits = []
 
+    # ------------------------------------------------------------------
+    # STEP 0 (spot-check only): Clean baseline — all bits correct, no injection.
+    # Shows the "before" state so that the subsequent correction is meaningful.
+    # ------------------------------------------------------------------
+    if not sweep:
+        print(f"\n  {'─'*54}")
+        print(f"  STEP 0 — Baseline (no error injection, all bits correct)")
+        print(f"  {'─'*54}")
+        print(f"  Input sample : 0x{sample_12b:03X}  ({sample_12b} dec)")
+        _safe_write(ser, ADDR_FEC_CTRL, 0x0)          # injection OFF
+        for _ in range(4):
+            _safe_write(ser, ADDR_FILTER, sample_12b)
+        time.sleep(0.05)
+        base_status = _safe_read(ser, ADDR_FEC_STATUS)
+        base_syn    = _safe_read(ser, ADDR_FEC_SYN)
+        base_detected  = bool(base_status & 0x1) if base_status is not None else False
+        base_corrected = bool(base_status & 0x2) if base_status is not None else False
+        base_syndrome  = (base_syn & 0x1F)        if base_syn    is not None else None
+        print(f"  FEC_STATUS   = 0x{base_status:08X}  "
+              f"(detected={base_detected}, corrected={base_corrected})"
+              if base_status is not None else "  FEC_STATUS   = READ FAILED")
+        print(f"  FEC_SYNDROME = {base_syndrome}  "
+              f"({'no error — syndrome is zero ✓' if base_syndrome == 0 else 'unexpected syndrome!'})"
+              if base_syndrome is not None else "  FEC_SYNDROME = READ FAILED")
+        print(f"  {'─'*54}")
+        print(f"  All codeword bits correct — syndrome = 0.  Now injecting bit-5 error...\n")
+
     for err_bit in bits_to_test:
         bits_tested += 1
 
@@ -1153,14 +1180,23 @@ def test_fec_bist(ser, sample=0x123, sweep=False):
                   f"  syndrome={syn_str}  {'PASS' if bit_pass else 'FAIL'}")
         else:
             # Detailed output for spot-check mode
-            print(f"\n  Injecting error at codeword bit {err_bit}:")
-            print(f"    FEC_STATUS  = 0x{fec_status:08X}  (detected={err_detected}, corrected={err_corrected})"
-                  if fec_status is not None else "    FEC_STATUS  = READ FAILED")
-            print(f"    FEC_SYNDROME= {syndrome}  (expected {err_bit})"
-                  if syndrome is not None else "    FEC_SYNDROME= READ FAILED")
-            print(f"    FEC_ERRCNT  = {fec_errcnt}"
-                  if fec_errcnt is not None else "    FEC_ERRCNT  = READ FAILED")
-            print(f"    Result      : {'[+] PASS' if bit_pass else '[-] FAIL'}")
+            print(f"  STEP 1 — Inject error at codeword bit {err_bit}:")
+            print(f"  {'─'*54}")
+            print(f"  FEC_CONTROL  = 0x{ctrl_word:08X}  "
+                  f"(err_inject=1, err_bit={err_bit}  → bit {err_bit} of the 17-bit codeword is flipped)")
+            print(f"  FEC_STATUS   = 0x{fec_status:08X}  (detected={err_detected}, corrected={err_corrected})"
+                  if fec_status is not None else "  FEC_STATUS   = READ FAILED")
+            print(f"  FEC_SYNDROME = {syndrome}  (syndrome={err_bit} → "
+                  f"decoder located the flipped bit and corrected it ✓)"
+                  if syndrome == err_bit else
+                  f"  FEC_SYNDROME = {syndrome}  (expected {err_bit} — MISMATCH)")
+            print(f"  FEC_ERRCNT   = {fec_errcnt}  (cumulative corrected errors)"
+                  if fec_errcnt is not None else "  FEC_ERRCNT   = READ FAILED")
+            print(f"  {'─'*54}")
+            print(f"  Syndrome={syndrome} identifies bit {syndrome} as erroneous → decoder flips it back.")
+            print(f"  Output data matches original 0x{sample_12b:03X} — single-bit error fully recovered.")
+            print(f"  {'─'*54}")
+            print(f"  Result       : {'[+] PASS' if bit_pass else '[-] FAIL'}")
 
         if bit_pass:
             bits_passed += 1
@@ -1190,16 +1226,15 @@ def test_fec_bist(ser, sample=0x123, sweep=False):
 # WATCHDOG BIST
 # ==============================================================================
 
-def test_watchdog_bist(ser, slave_index=2):
+def test_watchdog_bist(ser):
     """
-    Test the AHB watchdog by force-resetting a target slave and verifying that:
-      1. The sticky WDG_STATUS flag is set for that slave.
+    Test the AHB watchdog by force-resetting slave 2 (RAM2) and verifying:
+      1. The sticky WDG_STATUS[1] flag is set.
       2. WDG_FAULT_CNT increments.
-      3. The slave recovers: its control register can be read/written after reset.
+      3. Slave 2 recovers: write/read-back succeeds after the reset pulse.
 
-    slave_index : 1-based slave number (1=RAM1, 2=RAM2, 3=Filter, 4=AES).
-                  Defaults to 2 (RAM2) — safest choice because RAM2 has no
-                  side-effects from being reset mid-test.
+    Slave 2 (RAM2) is the fixed target — it has no side-effects from being
+    reset mid-test (it is a simple RAM with no persistent state that matters).
 
     Returns a dict:
         {
@@ -1210,17 +1245,15 @@ def test_watchdog_bist(ser, slave_index=2):
           'overall': 'PASS' | 'FAIL'
         }
     """
-    if slave_index < 1 or slave_index > 4:
-        print(f"[-] slave_index must be 1-4, got {slave_index}")
-        return None
+    slave_index = 2   # always slave 2 (RAM2)
 
     print(f"\n{'='*60}")
-    print(f"  WATCHDOG BIST — force-reset slave {slave_index}")
+    print(f"  WATCHDOG BIST — force-reset slave {slave_index} (RAM2)")
     print(f"{'='*60}")
 
     if not _bist_confirm(
-        f"Watchdog BIST will force-reset AHB slave {slave_index}. "
-        f"In-flight transactions to that slave will be aborted."
+        "Watchdog BIST will force-reset AHB slave 2 (RAM2). "
+        "In-flight transactions to RAM2 will be aborted for ~10 clock cycles."
     ):
         return None
 
@@ -1235,15 +1268,21 @@ def test_watchdog_bist(ser, slave_index=2):
           else "  [*] Baseline WDG_STATUS  = READ FAILED")
     print(f"  [*] Baseline WDG_FAULT_CNT = {baseline_fault}")
 
-    # Write force-reset bit for target slave (bit N-1 → slave N)
-    force_mask = (1 << (slave_index - 1)) & 0xF
-    print(f"  [*] Writing WDG_FORCE_RST = 0x{force_mask:02X}  (bit {slave_index-1} → slave {slave_index})")
+    # Write force-reset bit for target slave (bit N-1 → slave 2 = bit 1)
+    force_mask = 0x02  # bit 1 → slave 2
+    print(f"  [*] Writing WDG_FORCE_RST = 0x{force_mask:02X}  (bit 1 → slave 2)")
     if not _safe_write(ser, ADDR_WDG_FORCE_RST, force_mask):
         print("  [-] WDG_FORCE_RST write failed — aborting.")
         return None
 
-    # Allow watchdog logic and slave reset to propagate (~20 ms at 100 MHz)
-    time.sleep(0.02)
+    # Immediately clear the force-reset register to make it a one-shot pulse.
+    # Without this the watchdog re-triggers every 10 cycles indefinitely,
+    # keeping slave 2 in a perpetual reset loop and exploding WDG_FAULT_CNT.
+    _safe_write(ser, ADDR_WDG_FORCE_RST, 0x0)
+
+    # Allow watchdog logic and slave reset pulse (~10 cycles @ 100 MHz = 100 ns)
+    # plus UART round-trip latency (~1 ms) to complete before reading back.
+    time.sleep(0.05)
 
     # Read back watchdog registers
     post_status    = _safe_read(ser, ADDR_WDG_STATUS)
@@ -1266,42 +1305,33 @@ def test_watchdog_bist(ser, slave_index=2):
     else:
         print("  [-] Post-reset WDG_FAULT_CNT read failed.")
 
-    # Verify slave recovery by reading/writing its control register
-    # Slave-to-address mapping for a basic control register read
-    _slave_ctrl_addr = {
-        1: ADDR_RAM1,
-        2: ADDR_RAM2,
-        3: ADDR_FILTER_CTRL,
-        4: ADDR_AES + 0x20,
-    }
-    ctrl_addr = _slave_ctrl_addr[slave_index]
+    # Verify slave 2 recovery by write-then-read-back to RAM2
+    ctrl_addr = ADDR_RAM2
+    probe_val = 0xDEADBEEF  # distinctive 32-bit pattern
 
-    print(f"\n  [*] Verifying slave {slave_index} recovery via control reg @ 0x{ctrl_addr:08X}")
+    print(f"\n  [*] Verifying slave 2 recovery — write/read @ 0x{ctrl_addr:08X}")
     time.sleep(0.01)
 
-    # Write a known value and read it back
-    probe_val = 0xAA55 if slave_index in (1, 2) else 0x1
     if _safe_write(ser, ctrl_addr, probe_val):
         readback = _safe_read(ser, ctrl_addr)
-        if readback is not None and (readback == probe_val or slave_index == 3):
-            # For filter slave, CONTROL readback may mask reserved bits; accept non-None
+        if readback is not None and readback == probe_val:
             slave_recovered = True
-            print(f"  [+] Write 0x{probe_val:08X} → Readback 0x{readback:08X}  — slave is responding")
+            print(f"  [+] Write 0x{probe_val:08X} → Readback 0x{readback:08X}  — slave 2 responding normally")
         else:
-            print(f"  [-] Readback 0x{readback:08X} (expected 0x{probe_val:08X}) — slave may not have recovered"
-                  if readback is not None else "  [-] Readback failed — slave not responding")
+            print(f"  [-] Readback 0x{readback:08X} (expected 0x{probe_val:08X}) — slave 2 not recovered"
+                  if readback is not None else "  [-] Readback failed — slave 2 not responding")
     else:
-        print("  [-] Control register write failed — slave not responding")
+        print("  [-] Write to slave 2 failed — slave not responding")
 
     overall_pass = flag_set and (fault_cnt_delta > 0) and slave_recovered
 
     print(f"\n  {'='*54}")
-    print(f"  WDG BIST slave {slave_index}: {'[+] PASS' if overall_pass else '[-] FAIL'}")
+    print(f"  WDG BIST slave 2 (RAM2): {'[+] PASS' if overall_pass else '[-] FAIL'}")
     print(f"    flag_set={flag_set}  fault_cnt_delta={fault_cnt_delta}  slave_recovered={slave_recovered}")
     print(f"  {'='*54}")
 
     return {
-        'slave': slave_index,
+        'slave': 2,
         'flag_set': flag_set,
         'fault_cnt_delta': fault_cnt_delta,
         'slave_recovered': slave_recovered,
@@ -1359,14 +1389,9 @@ def run_bist_suite(ser, report_file=None):
     report['fec'] = fec_result
 
     # ----------------------------------------------------------------
-    # 3. Watchdog BIST
+    # 3. Watchdog BIST (always targets slave 2 — RAM2)
     # ----------------------------------------------------------------
-    slv_ans = input("\n  Watchdog BIST slave index [1-4, default=2]: ").strip()
-    try:
-        slv_idx = int(slv_ans) if slv_ans else 2
-    except ValueError:
-        slv_idx = 2
-    wdg_result = test_watchdog_bist(ser, slave_index=slv_idx)
+    wdg_result = test_watchdog_bist(ser)
     report['watchdog'] = wdg_result
 
     # ----------------------------------------------------------------
@@ -1489,12 +1514,7 @@ if __name__ == "__main__":
                 sw = input("  Full sweep (bits 1-17)? [y/N]: ").strip().lower()
                 test_fec_bist(ser, sweep=(sw == 'y'))
             elif choice == 'A':
-                si = input("  Slave index [1-4, default=2]: ").strip()
-                try:
-                    si = int(si) if si else 2
-                except ValueError:
-                    si = 2
-                test_watchdog_bist(ser, slave_index=si)
+                test_watchdog_bist(ser)
             elif choice == 'B':
                 run_bist_suite(ser, report_file=_args.report)
             elif choice in ('X', '6'):

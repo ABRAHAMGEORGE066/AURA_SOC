@@ -115,33 +115,66 @@ module fpga_top (
     assign hresp  = mux_hresp;
 
     // -------------------------------------------------------------------------
+    // Watchdog — per-slave isolated reset
+    // slv_rst_n[0]=slave1, [1]=slave2, [2]=slave3, [3]=slave4
+    // A watchdog event (HW timeout or SW force-reset) pulses slv_rst_n[N]=0
+    // for RST_PULSE_WIDTH=10 cycles for that slave only.
+    // -------------------------------------------------------------------------
+    wire [3:0]  slv_rst_n;          // per-slave active-low isolating resets
+    wire [3:0]  wdg_timeout_flags;  // sticky event flags per slave
+    wire [31:0] wdg_total_timeouts; // cumulative watchdog event counter
+    wire [3:0]  wdg_force_rst_w;    // SW force-reset from filter slave WDG_FORCE_RST reg
+    wire [7:0]  wdg_timeout_cfg_w;  // SW threshold from filter slave WDG_TIMEOUT_CFG reg
+
+    ahb_watchdog watchdog (
+        .hclk(hclk), .hresetn(hresetn),
+        .hsel    ({hsel_s4,   hsel_s3,   hsel_s2,   hsel_s1}),
+        .hreadyout({hready_s4, hready_s3, hready_s2, hready_s1}),
+        .slv_rst_n(slv_rst_n),
+        .timeout_flags(wdg_timeout_flags),
+        .total_timeouts(wdg_total_timeouts),
+        .force_reset(wdg_force_rst_w),
+        .timeout_cfg(wdg_timeout_cfg_w)
+    );
+
+    // Combined per-slave resets: slave held in reset by global reset OR watchdog pulse
+    wire hresetn_s1 = hresetn & slv_rst_n[0];
+    wire hresetn_s2 = hresetn & slv_rst_n[1];
+    wire hresetn_s3 = hresetn & slv_rst_n[2];
+    wire hresetn_s4 = hresetn & slv_rst_n[3];
+
+    // -------------------------------------------------------------------------
     // Slaves
     // -------------------------------------------------------------------------
-    
+
     // Slave 1: Generic RAM
     ahb_slave u_slave1 (
-        .hclk(clk_s1), .hresetn(hresetn), .hsel(hsel_s1), .haddr(haddr), .hwrite(hwrite),
+        .hclk(clk_s1), .hresetn(hresetn_s1), .hsel(hsel_s1), .haddr(haddr), .hwrite(hwrite),
         .htrans(htrans), .hsize(hsize), .hburst(hburst), .hprot(hprot), .hwdata(hwdata),
         .hready(hready), .hreadyout(hready_s1), .hresp(hresp_s1), .hrdata(hrdata_s1)
     );
 
-    // Slave 2: Generic RAM
+    // Slave 2: Generic RAM (watchdog BIST target — force-resetable via WDG_FORCE_RST bit1)
     ahb_slave u_slave2 (
-        .hclk(clk_s2), .hresetn(hresetn), .hsel(hsel_s2), .haddr(haddr), .hwrite(hwrite),
+        .hclk(clk_s2), .hresetn(hresetn_s2), .hsel(hsel_s2), .haddr(haddr), .hwrite(hwrite),
         .htrans(htrans), .hsize(hsize), .hburst(hburst), .hprot(hprot), .hwdata(hwdata),
         .hready(hready), .hreadyout(hready_s2), .hresp(hresp_s2), .hrdata(hrdata_s2)
     );
 
-    // Slave 3: Filter Chain Slave
+    // Slave 3: Filter Chain Slave (hosts watchdog register interface)
     ahb_filter_slave u_slave3 (
-        .hclk(clk_s3), .hresetn(hresetn), .hsel(hsel_s3), .haddr(haddr), .hwrite(hwrite),
+        .hclk(clk_s3), .hresetn(hresetn_s3), .hsel(hsel_s3), .haddr(haddr), .hwrite(hwrite),
         .htrans(htrans), .hsize(hsize), .hburst(hburst), .hprot(hprot), .hwdata(hwdata),
-        .hready(hready), .hreadyout(hready_s3), .hresp(hresp_s3), .hrdata(hrdata_s3)
+        .hready(hready), .hreadyout(hready_s3), .hresp(hresp_s3), .hrdata(hrdata_s3),
+        .wdg_status_in(wdg_timeout_flags),
+        .wdg_fault_cnt_in(wdg_total_timeouts),
+        .wdg_force_rst_out(wdg_force_rst_w),
+        .wdg_timeout_cfg_out(wdg_timeout_cfg_w)
     );
 
     // Slave 4: AES Slave
     ahb_aes_slave u_slave4 (
-        .hclk(clk_s4), .hresetn(hresetn), .hsel(hsel_s4), .haddr(haddr), .hwrite(hwrite),
+        .hclk(clk_s4), .hresetn(hresetn_s4), .hsel(hsel_s4), .haddr(haddr), .hwrite(hwrite),
         .htrans(htrans), .hsize(hsize), .hburst(hburst), .hprot(hprot), .hwdata(hwdata),
         .hready(hready), .hreadyout(hready_s4), .hresp(hresp_s4), .hrdata(hrdata_s4)
     );

@@ -131,14 +131,9 @@ module ahb_filter_slave(
 
     // TMR status/error wires
     wire tmr_mismatch_w, tmr_err_ab_w, tmr_err_bc_w, tmr_err_ac_w, tmr_error_mask_w;
-    // LPF TMR: no dedicated LPF TMR voter instances; lpf_voted_out is driven directly
-    // from u_filter_chain output (see assign below). Status wires tied to 0.
-    wire lpf_mismatch_w, lpf_err_ab_w, lpf_err_bc_w, lpf_err_ac_w, lpf_error_mask_w;
-    assign lpf_mismatch_w   = 1'b0;
-    assign lpf_err_ab_w     = 1'b0;
-    assign lpf_err_bc_w     = 1'b0;
-    assign lpf_err_ac_w     = 1'b0;
-    assign lpf_error_mask_w = 1'b0;
+    // LPF TMR: three lpf_fir instances + voter (implemented below)
+    wire lpf_mismatch_w, lpf_err_ab_w, lpf_err_bc_w, lpf_err_ac_w;
+    wire [DATA_WIDTH-1:0] lpf_error_mask_w;
     wire glitch_mismatch_w, glitch_err_ab_w, glitch_err_bc_w, glitch_err_ac_w, glitch_error_mask_w;
 
     // TMR control and error counters
@@ -169,6 +164,7 @@ module ahb_filter_slave(
     // Declare lpf_tmr_control_reg
     reg [31:0] lpf_tmr_control_reg;
     wire lpf_inject_b = lpf_tmr_control_reg[0];
+    wire lpf_inject_c = lpf_tmr_control_reg[1];
 
     // Declare glitch_tmr_control_reg and glitch_inject_b/c
     reg [31:0] glitch_tmr_control_reg;
@@ -182,6 +178,8 @@ module ahb_filter_slave(
 
     // Declare filter_din as reg
     reg [DATA_WIDTH-1:0] filter_din;
+    // Pre-LPF signal exposed from wireline_rcvr_chain (glitch stage output)
+    wire signed [DATA_WIDTH-1:0] pre_lpf_out;
 
     wireline_rcvr_chain #(
         .DATA_WIDTH(DATA_WIDTH)
@@ -193,6 +191,7 @@ module ahb_filter_slave(
         .fec_err_inject(fec_err_inject),
         .fec_err_bit(fec_err_bit),
         .data_out(rcvr_data_out),
+        .pre_lpf_out(pre_lpf_out),
         .fec_syndrome(rcvr_fec_syndrome),
         .fec_error_detected(rcvr_fec_error_detected),
         .fec_error_corrected(rcvr_fec_error_corrected)
@@ -218,13 +217,37 @@ module ahb_filter_slave(
     //                                                                          │
     //                                                               fec_dout → out_fifo
     //
-    // The Glitch and DC Offset TMR layers re-process the already-filtered signal
-    // to provide fault detection coverage for those hardware blocks.
-    assign lpf_voted_out = rcvr_data_out;
+    // -----------------------------------------------------------------
+    // LPF TMR Stage: Three identical lpf_fir instances + voter.
+    // Input: pre_lpf_out = glitch stage output from main chain.
+    // -----------------------------------------------------------------
+    wire signed [DATA_WIDTH-1:0] lpf_out_a;
+    lpf_fir #(.DATA_WIDTH(DATA_WIDTH)) inst_lpf_a (
+        .clk(hclk), .rst(!hresetn), .enable(filter_enable), .din(pre_lpf_out), .dout(lpf_out_a)
+    );
+    wire signed [DATA_WIDTH-1:0] lpf_out_b_raw;
+    lpf_fir #(.DATA_WIDTH(DATA_WIDTH)) inst_lpf_b (
+        .clk(hclk), .rst(!hresetn), .enable(filter_enable), .din(pre_lpf_out), .dout(lpf_out_b_raw)
+    );
+    wire signed [DATA_WIDTH-1:0] lpf_out_b;
+    assign lpf_out_b = lpf_inject_b ? {DATA_WIDTH{1'b0}} : lpf_out_b_raw;
+    wire signed [DATA_WIDTH-1:0] lpf_out_c_raw;
+    lpf_fir #(.DATA_WIDTH(DATA_WIDTH)) inst_lpf_c (
+        .clk(hclk), .rst(!hresetn), .enable(filter_enable), .din(pre_lpf_out), .dout(lpf_out_c_raw)
+    );
+    wire signed [DATA_WIDTH-1:0] lpf_out_c;
+    assign lpf_out_c = lpf_inject_c ? {DATA_WIDTH{1'b0}} : lpf_out_c_raw;
+    tmr_voter #(.DATA_WIDTH(DATA_WIDTH)) inst_lpf_tmr (
+        .in_a(lpf_out_a), .in_b(lpf_out_b), .in_c(lpf_out_c),
+        .voted_out(lpf_voted_out),
+        .tmr_mismatch(lpf_mismatch_w), .tmr_err_ab(lpf_err_ab_w),
+        .tmr_err_bc(lpf_err_bc_w),     .tmr_err_ac(lpf_err_ac_w),
+        .tmr_error_mask(lpf_error_mask_w)
+    );
 
     // -----------------------------------------------------------------
     // Glitch TMR Stage: Three identical glitch_filter instances + voter.
-    // Input: lpf_voted_out = rcvr_data_out (main chain FEC-corrected output).
+    // Input: lpf_voted_out = majority-voted LPF output.
     // -----------------------------------------------------------------
     glitch_filter #(.DATA_WIDTH(DATA_WIDTH)) inst_glitch_a (
         .clk(hclk), .rst(!hresetn), .enable(filter_enable), .din(lpf_voted_out), .dout(glitch_out_a)
@@ -385,6 +408,13 @@ module ahb_filter_slave(
             fec_syndrome_r <= 5'd0;
             fec_error_detected_r <= 1'b0;
         end else begin
+            // Auto-clear force-reset register every cycle so it generates
+            // a single-cycle pulse to the watchdog.  An AHB write to 0x78
+            // sets it for exactly one clock; the watchdog sees it for that
+            // one cycle and fires once — preventing the continuous re-trigger
+            // loop that caused WDG_FAULT_CNT to reach hundreds of thousands.
+            wdg_force_rst_reg <= 4'd0;
+
             // Default ready behavior
             if (!hsel) begin
                 hreadyout <= 1'b1;
@@ -445,10 +475,6 @@ module ahb_filter_slave(
                     end
                     5'h1E: begin // 0x78 WDG_FORCE_RST: write bit N to force-reset slave N+1
                         wdg_force_rst_reg <= hwdata[3:0];
-                        hreadyout <= 1'b1;
-                    end
-                    5'h1F: begin // 0x7C WDG_TIMEOUT_CFG: programmable stall-cycle threshold
-                        wdg_timeout_cfg_reg <= hwdata[7:0];
                         hreadyout <= 1'b1;
                     end
                     default: begin
@@ -659,4 +685,9 @@ module ahb_filter_slave(
             wdg_fault_cnt_latched <= wdg_fault_cnt_in;
         end
     end
+
+    // Drive watchdog output wires from their backing registers
+    assign wdg_force_rst_out   = wdg_force_rst_reg;
+    assign wdg_timeout_cfg_out = wdg_timeout_cfg_reg;
+
 endmodule

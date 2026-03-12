@@ -20,6 +20,8 @@ module wireline_rcvr_chain #(
     input  wire [4:0]                   fec_err_bit,    // which codeword bit (0-16) to flip
     // Filtered + FEC-corrected output
     output wire signed [DATA_WIDTH-1:0] data_out,
+    // Pre-LPF signal (output of glitch stage, input to LPF stage) — for external LPF TMR
+    output wire signed [DATA_WIDTH-1:0] pre_lpf_out,
     // FEC status outputs
     output wire [4:0]                   fec_syndrome,
     output wire                         fec_error_detected,
@@ -125,6 +127,8 @@ module wireline_rcvr_chain #(
     // Purpose: Final low-pass filtering to smooth signal and remove
     //          residual high-frequency noise and aliases
     //==================================================================
+    assign pre_lpf_out = glitch_out; // expose pre-LPF signal for external LPF TMR
+
     lpf_fir #(
         .DATA_WIDTH(DATA_WIDTH)
     ) lpf_stage (
